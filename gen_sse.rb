@@ -2,17 +2,40 @@
 
 
 $use_sse = true
-$double = true
+$double = false
 #$use_ssex = false
 $float = $double ? "double" : "float"
 $wsize = $double ? 2 : 1
+$quantize_fbits = 7
+$quantize_ibits = 0
+
+def quantize(len, ibits, fbits)
+  x = ""
+  x += "__attribute__((noinline)) static "
+  x += "void quantize_#{len}_#{ibits}_#{fbits}(#{$float} *a) {\n"
+  x += "    int i, j, neg;\n"
+  x += "    #{$float} v;\n"
+  x += "    for (i=0; i<#{len}; i++) {\n"
+  x += "        v = *a;\n"
+  x += "        neg = v < 0;\n"
+  x += "        if (neg) v = -v;\n"
+  x += "        j = v * #{(1<<fbits)} + 0.5;\n"
+  x += "        if (j > #{(1<<(ibits+fbits))-1}) j = #{(1<<(ibits+fbits))-1};\n"
+  #x += "        j &= #{(1<<(ibits+fbits))-1};\n"
+  x += "        v = (#{$float})j * (#{$float})#{1.0 / (1<<fbits)};\n"
+  x += "        if (neg) v = -v;\n"
+  x += "        *a++ = v;\n"
+  x += "    }\n}\n\n"
+  x
+end
+  
 
 def memclr(len)
   x = ""
   if (len > 8)
     x += "__attribute__((noinline)) "
   end
-  x += "void memory_clear_#{len}(#{$float} *dst) {\n"
+  x += "static void memory_clear_#{len}(#{$float} *dst) {\n"
   #x += "   memset(dst, 0, #{len}*sizeof(#{$float}));\n"
   
   i = 0
@@ -52,7 +75,7 @@ def memcpy(len)
   if (len > 8)
     x += "__attribute__((noinline)) "
   end
-  x += "void memory_copy_#{len}(#{$float} *dst, #{$float} *src) {\n"
+  x += "static void memory_copy_#{len}(#{$float} *dst, #{$float} *src) {\n"
   i = 0
     
   if $use_sse
@@ -113,7 +136,7 @@ def subtract(len)
   if (len > 8)
     x += "__attribute__((noinline)) "
   end
-  x += "void subtract_#{len}(#{$float} *a, #{$float} *b, #{$float} *c) {\n"
+  x += "static void subtract_#{len}(#{$float} *a, #{$float} *b, #{$float} *c) {\n"
   i = 0
   
   if $use_sse
@@ -160,7 +183,7 @@ def subtract_sig(len)
   if (len > 8)
     x += "__attribute__((noinline)) "
   end
-  x += "void subtract_sig_#{len}(#{$float} *a, #{$float} *b, #{$float} *c) {\n"
+  x += "static void subtract_sig_#{len}(#{$float} *a, #{$float} *b, #{$float} *c) {\n"
   if $double
     x += "    __m128d ina, inb, ones;\n"
   else
@@ -220,7 +243,7 @@ def dotprod(len)
   if (len > 8)
     x += "__attribute__((noinline)) "
   end
-  x += "#{$float} dotprod_#{len}(#{$float} *weights, #{$float} *values) {\n"
+  x += "static #{$float} dotprod_#{len}(#{$float} *weights, #{$float} *values) {\n"
   
   if $use_sse && len >= 4
     x += "    #{$float} sum0, sum1, sum2, sum3;\n"
@@ -368,7 +391,7 @@ def sum_scaled(len)
   if (len > 8)
     x += "__attribute__((noinline)) "
   end
-  x += "void sum_scaled_#{len}(#{$float} *in, #{$float} *out, #{$float} scale) {\n"
+  x += "static void sum_scaled_#{len}(#{$float} *in, #{$float} *out, #{$float} scale) {\n"
     
   if $use_sse
     if $double
@@ -427,7 +450,7 @@ def mul_sig_prime(len)
   if (len > 8)
     x += "__attribute__((noinline)) "
   end
-  x += "void mul_sig_prime_#{len}(#{$float} *in, #{$float} *out) {\n"
+  x += "static void mul_sig_prime_#{len}(#{$float} *in, #{$float} *out) {\n"
   x += "    #{$float} i;\n"
     
   if $use_sse
@@ -491,7 +514,7 @@ end
 
 def sigmoid(len)
   io = 0
-  x = "__attribute__((noinline)) void sigmoid_#{len}(#{$float} *in) {\n"
+  x = "__attribute__((noinline)) void static sigmoid_#{len}(#{$float} *in) {\n"
   x += "    #{$float} x, x2, af, bf;\n    int i;\n"
     
   # if $use_ssex
@@ -688,11 +711,71 @@ class Layer
   # Weights
   attr_accessor :weights
   attr_accessor :mynum
+  # Other
+  attr_accessor :quantize, :quanti, :quantf
     
   def initialize
     @weights = []
   end
-    
+end
+
+class LayerSpec
+  attr_accessor :size, :quantize, :quanti, :quantf, :sigmoid
+
+  def initialize(word)
+    @quantize = false
+    @sigmoid = true
+    @quanti = 0
+    @quantf = 0
+
+    word = word.downcase.scan(/./)
+
+    size_s = ""
+    while word.size > 0 && word[0] =~ /[[:digit:]]/
+      size_s << word[0]
+      word.shift
+    end
+    @size = size_s.to_i
+
+    if word.size > 0 && word[0] =~ /[ls]/
+      @sigmoid = false if word[0] == 'l'
+      word.shift
+    end
+
+    if word.size > 0 && word[0] == 'q'
+      @quantize = true
+      i_s = ""
+      f_s = ""
+      while word.size > 0 && word[0] != '.'
+        i_s << word[0]
+        word.shift
+      end
+      @quanti = i_s.to_i
+      word.shift if word.size > 0
+      while word.size > 0
+        f_s << word[0]
+        word.shift
+      end
+      @quantf = f_s.to_i
+    end
+  end
+
+  def comment
+    x = "#{@size} nodes"
+    if @sigmoid
+      x += ", tanh activation"
+    else
+      x += ", linear activation"
+    end
+    if @quantize
+      x += ", quantized to #{@quanti}.#{@quantf}"
+    end
+    x
+  end
+
+  def to_s
+    "#{@size}#{@sigmoid ? 's' : 'l'}#{@quantize ? "q" : ""}"
+  end
 end
 
 
@@ -714,7 +797,7 @@ class Network
     if (size > 8)
         x += "__attribute__((noinline)) "
     end
-    x += "void randomize_#{size}(#{$float} *mem) {\n"
+    x += "static void randomize_#{size}(#{$float} *mem) {\n"
     x += "    const double RMI = 1.0 / RAND_MAX;\n"
     x += "    double b2 = pow((double)#{size}, -0.5) * sqrt(12.0);\n"
     x += "    double b = b2*0.5;\n"
@@ -754,7 +837,7 @@ class Network
     x
   end
   
-  def initialize(layer_list, outsig)
+  def initialize(layer_list)
     @mem_size = 0
     @need_sigmoid = []
     @need_dotprod = []
@@ -764,9 +847,10 @@ class Network
     @need_subtract_sig = []
     @need_copy = []
     @need_clear = []
+    @need_quantize = []
         
-    @defines = allocate(layer_list, outsig)
-    @out_tmp = "(mem+#{allocate_block(layer_list[-1])})"
+    @defines = allocate(layer_list)
+    @out_tmp = "(mem+#{allocate_block(layer_list[-1].size)})"
     @defines += "#define OUT_TMP #{@out_tmp}\n\n"
     @fwd = forward
     @bkw = backward
@@ -779,10 +863,12 @@ class Network
     @need_subtract_sig.uniq!
     @need_copy.uniq!
     @need_clear.uniq!
+    @need_quantize.uniq!
         
     @allocator = allocate_func(@mem_size, @name)
     @funcs = @allocator
     @funcs += randomize #(@mem_size, @name)
+    @need_quantize.each { |i| @funcs += quantize(i[0], i[1], i[2]); }
     @need_sigmoid.each { |i| @funcs += sigmoid(i); }
     @need_dotprod.each { |i| @funcs += dotprod(i); }
     @need_sum_scaled.each { |i| @funcs += sum_scaled(i); }
@@ -817,8 +903,9 @@ class Network
   end
     
     
-  def allocate(layer_list, outsig)
-    @name = layer_list.join("_") + (outsig ? "s" : "l")
+  def allocate(layer_list)
+    @name = layer_list.map{|l| l.to_s}.join("_")
+    #@name = layer_list.join("_") + (outsig ? "s" : "l")
         
     # Find homes for all values, weights, and deltas
     @needs_dotprod = []
@@ -826,7 +913,7 @@ class Network
     
     # Previous layer
     l = layer_list.clone
-    prev_nnodes = l.shift
+    prev_nnodes = l.shift.size
     @in_tmp = "(mem+#{allocate_block(prev_nnodes)})"
     x = "#define IN_TMP #{@in_tmp}\n"
     @in_tmp = "IN_TMP"
@@ -836,7 +923,8 @@ class Network
     ln = 1
             
     while (l.size > 0)
-      nnodes = l.shift
+      layerspec = l.shift
+      nnodes = layerspec.size
       values = allocate_block(nnodes)
       val_ptr = "(mem+#{values})"
       x += "#define L#{ln}_VAL #{val_ptr}\n"
@@ -854,8 +942,10 @@ class Network
       layer.out_val = val_ptr
       layer.in_del = prev_del
       layer.out_del = del_ptr
-      layer.sig = true
-      layer.sig = false if l.size==0 && !outsig
+      layer.quantize = layerspec.quantize
+      layer.quanti = layerspec.quanti
+      layer.quantf = layerspec.quantf
+      layer.sig = layerspec.sigmoid
       layer.mynum = @layers.size
             
       for i in 0...nnodes do
@@ -878,17 +968,21 @@ class Network
   end
 
   def forward_h
-    "#{$float} *forward_#{@name}(#{$float} *in, #{$float} *mem);\n"
+    x = ""
+    layers.each do |layer|
+      x += "#{$float} *forward_L#{layer.mynum}_#{@name}(#{$float} *mem);\n"
+    end
+    x + "#{$float} *forward_#{@name}(#{$float} *in, #{$float} *mem);\n"
   end
     
   def forward
-    x = "__attribute__((noinline)) "
-    x += "#{$float} *forward_#{@name}(#{$float} *in, #{$float} *mem) {\n"
     @need_copy << layers.first.n_in
-    x += "    memory_copy_#{layers.first.n_in}(#{@in_tmp}, in);\n\n"
-    #x += "    memcpy(#{@in_tmp}, in, sizeof(float) * #{layers.first.n_in});\n\n"
-        
+    x = ""
+
     layers.each do |layer|
+      x += "__attribute__((noinline)) "
+      x += "#{$float} *forward_L#{layer.mynum}_#{@name}(#{$float} *mem) {\n"
+
       nnodes = layer.n_out
       prev_nnodes = layer.n_in
       ptr = layer.out_val
@@ -906,13 +1000,29 @@ class Network
         @need_sigmoid << nnodes
         x += "    sigmoid_#{nnodes}(#{ptr});\n"
       end
-            
-      x += "\n"
+
+      if (layer.quantize)
+        @need_quantize << [nnodes, layer.quanti, layer.quantf]
+        x += "    quantize_#{nnodes}_#{layer.quanti}_#{layer.quantf}(#{ptr});\n"
+      end
+
+      x += "    return #{layer.out_val};\n"
+      
+      x += "}\n\n"
     end
         
-        
-    x += "    return #{layers.last.out_val};\n"
-        
+    x += "__attribute__((noinline)) "
+    x += "#{$float} *forward_#{@name}(#{$float} *in, #{$float} *mem) {\n"
+    x += "    memory_copy_#{layers.first.n_in}(#{@in_tmp}, in);\n"
+    #x += "    memcpy(#{@in_tmp}, in, sizeof(float) * #{layers.first.n_in});\n"
+
+    layers.each_index do |i|
+      layer = layers[i]
+      ret = (i == layers.size-1) ? "return " : "";
+      x += "    #{ret}forward_L#{layer.mynum}_#{@name}(mem);\n"
+    end
+    #x += "    return #{layers.last.out_val};\n"
+
     x += "}\n\n"
     
     x
@@ -983,7 +1093,33 @@ class Network
   end
 end
 
+layers = []
+
+ARGV.each do |arg|
+  layers << LayerSpec.new(arg)
+end
+
+layers.each_index do |i|
+  puts "// Layer #{i}: #{layers[i].comment}"
+end
+puts
+
+net = Network.new(layers)
+print net.code
+
+=begin
 layers = ARGV.clone
+
+do_quantize = []
+if (layers.last.downcase[0] == 'q')
+  q = layers.last.scan(/./)
+  q.shift
+  q.each_index do |i|
+    do_quantize[i] = q[i] == '1'
+  end
+  layers.pop
+end
+
 sigout = false
 if (layers.last.downcase == "s")
   sigout = true
@@ -991,8 +1127,9 @@ if (layers.last.downcase == "s")
 end
 
 layers2 = layers.map {|x| x.to_i}
-net = Network.new(layers2, sigout)
+net = Network.new(layers2, sigout, do_quantize)
 print net.code
+=end
 
 # Load configuration
 # Allocate block for values
