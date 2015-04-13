@@ -517,11 +517,12 @@ def emit_tanh_float()
   x += "    float a, b;\n"
   x += "    const float scale = 16777216.0 / log(2.0);\n"
   x += "    const float offset = 1065353216;\n"
-  x += "    u.i = x*scale + offset;\n"
-  x += "    v.i = -x*scale + offset;\n"
+  x += "    x *= scale;\n"
+  x += "    u.i = x + offset;\n"
+  x += "    v.i = offset - x;\n"
   x += "    a = (u.f-1) / (u.f+1);\n"
-  x += "    b = -(v.f-1) / (v.f+1);\n"
-  x += "    return (a+b)*0.5f;\n"
+  x += "    b = (v.f-1) / (v.f+1);\n"
+  x += "    return (a-b)*0.5f;\n"
   x += "}\n\n"
   x
 end
@@ -532,11 +533,12 @@ def emit_tanh_double()
   x += "    double a, b;\n"
   x += "    const double scale = 9007199254740992.0 / log(2.0);\n"
   x += "    const double offset = 4607182418800017408.0;\n"
-  x += "    u.i = x*scale + offset;\n"
-  x += "    v.i = -x*scale + offset;\n"
+  x += "    x *= scale;\n"
+  x += "    u.i = x + offset;\n"
+  x += "    v.i = offset - x;\n"
   x += "    a = (u.f-1) / (u.f+1);\n"
-  x += "    b = -(v.f-1) / (v.f+1);\n"
-  x += "    return (a+b)*0.5;\n"
+  x += "    b = (v.f-1) / (v.f+1);\n"
+  x += "    return (a-b)*0.5;\n"
   x += "}\n\n"
   x
 end
@@ -564,28 +566,26 @@ def sigmoid(len, net)
     end
   else
     if $use_sse && (len>1)
-      x += "    __m128 Fzero = _mm_setzero_ps();\n"
       x += "    const float Dscale = 16777216.0 / log(2.0);\n"
       x += "    __m128 Fscale = _mm_set1_ps(Dscale);\n"
       x += "    __m128 Foffset = _mm_set1_ps(1065353216.0);\n"
       x += "    __m128 Fone = _mm_set1_ps(1.0);\n"
       x += "    __m128 Fhalf = _mm_set1_ps(0.5);\n"
-      x += "    __m128 x, u, um1, up1, v, vm1, vp1, a, b;\n"
+      x += "    __m128 x, u, v, a, b;\n"
       loops = (len+3)/4
       if (loops > 1)
         x += "    int i;\n"
         x += "    for (i=0; i<#{loops}; i++) {\n"
       end
       x += "        x = _mm_load_ps(in);\n"
-      x += "        u = _mm_add_ps(_mm_mul_ps(x, Fscale), Foffset);\n"
+      x += "        x = _mm_mul_ps(x, Fscale);\n"
+      x += "        u = _mm_add_ps(x, Foffset);\n"
       x += "        u = (__m128)_mm_cvttps_epi32(u);\n"
-      x += "        x = _mm_sub_ps(Fzero, x);\n"
-      x += "        v = _mm_add_ps(_mm_mul_ps(x, Fscale), Foffset);\n"
+      x += "        v = _mm_add_ps(Foffset, x);\n"
       x += "        v = (__m128)_mm_cvttps_epi32(v);\n"
       x += "        a = _mm_div_ps(_mm_sub_ps(u, Fone), _mm_add_ps(u, Fone));\n"
       x += "        b = _mm_div_ps(_mm_sub_ps(v, Fone), _mm_add_ps(v, Fone));\n"
-      x += "        b = _mm_sub_ps(Fzero, b);\n"
-      x += "        a = _mm_mul_ps(_mm_add_ps(a, b), Fhalf);\n"
+      x += "        a = _mm_mul_ps(_mm_sub_ps(a, b), Fhalf);\n"
       x += "        b = _mm_sub_ps(Fone, _mm_mul_ps(a, a));\n"
       x += "        _mm_store_ps(in, a);\n"
       x += "        _mm_store_ps(sigp, b);\n"
