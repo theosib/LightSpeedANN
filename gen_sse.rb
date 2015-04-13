@@ -581,7 +581,7 @@ def sigmoid(len, net)
       x += "        x = _mm_mul_ps(x, Fscale);\n"
       x += "        u = _mm_add_ps(x, Foffset);\n"
       x += "        u = (__m128)_mm_cvttps_epi32(u);\n"
-      x += "        v = _mm_add_ps(Foffset, x);\n"
+      x += "        v = _mm_sub_ps(Foffset, x);\n"
       x += "        v = (__m128)_mm_cvttps_epi32(v);\n"
       x += "        a = _mm_div_ps(_mm_sub_ps(u, Fone), _mm_add_ps(u, Fone));\n"
       x += "        b = _mm_div_ps(_mm_sub_ps(v, Fone), _mm_add_ps(v, Fone));\n"
