@@ -10,17 +10,17 @@ $wsize = $double ? 2 : 1
 def quantize(len, ibits, fbits)
   x = ""
   x += "__attribute__((noinline)) static "
-  x += "void quantize_#{len}_#{ibits}_#{fbits}(#{$float} *a) {\n"
+  x += "void quantize_#{len}_#{ibits}_#{fbits}(#{$float} *a, #{$float} *b) {\n"
   x += "    int i, j;\n"
   x += "    #{$float} v;\n"
   x += "    const #{$float} scale = 1.0 / #{(1<<(fbits-1))};\n"
   x += "    for (i=0; i<#{len}; i++) {\n"
-  x += "        v = *a;\n"
+  x += "        v = *a++;\n"
   x += "        j = v * #{1<<(fbits-1)} + #{1<<(ibits+fbits-1)};\n"
   x += "        if (j < 0) j = 0;\n"
   x += "        if (j > #{(1<<(ibits+fbits))-1}) j = #{(1<<(ibits+fbits))-1};\n"
   x += "        v = (j - #{1<<(ibits+fbits-1)}) * scale;\n"
-  x += "        *a++ = v;\n"
+  x += "        *b++ = v;\n"
   x += "    }\n}\n\n"
   x
 end
@@ -172,14 +172,14 @@ def subtract(len)
   x + "}\n\n"
 end
 
-def subtract_sig(len)
-  # Emit a function that subtracts b from a and writes to c
+def subtract_tanh_prime(len)
+  # Emit a function that computes c[i] = (a[i] - b[i]) * (1 - b[i]*b[i])
     
   x = ""
   if (len > 8)
     x += "__attribute__((noinline)) "
   end
-  x += "static void subtract_sig_#{len}(#{$float} *a, #{$float} *b, #{$float} *c) {\n"
+  x += "static void subtract_tanh_prime_#{len}(#{$float} *a, #{$float} *b, #{$float} *c) {\n"
   if $double
     x += "    __m128d ina, inb, ones;\n"
   else
@@ -222,6 +222,64 @@ def subtract_sig(len)
   while (len > 0) 
     x += "    bf = b[#{i}];\n"
     x += "    c[#{i}] = (a[#{i}] - bf) * (1 - bf*bf);\n"
+    i += 1
+    len -= 1
+  end
+    
+  x + "}\n\n"
+end
+
+
+def subtract_logistic_prime(len)
+  # Emit a function that computes c[i] = (a[i] - b[i]) * b[i] * (1 - b[i])
+    
+  x = ""
+  if (len > 8)
+    x += "__attribute__((noinline)) "
+  end
+  x += "static void subtract_logistic_prime_#{len}(#{$float} *a, #{$float} *b, #{$float} *c) {\n"
+  if $double
+    x += "    __m128d ina, inb, ones;\n"
+  else
+    x += "    __m128 ina, inb, ones;\n"
+  end
+  x += "    #{$float} bf;\n"
+  
+  i = 0
+  
+  if $use_sse && len >= 4
+    if $double
+      x += "    ones = _mm_set1_pd(1.0);\n"
+      while (len >= 2) 
+        x += "    ina = _mm_load_pd(a + #{i});\n"
+        x += "    inb = _mm_load_pd(b + #{i});\n"
+        x += "    ina = _mm_sub_pd(ina, inb);\n"  # a := a-b
+        x += "    ina = _mm_mul_pd(ina, inb);\n"  # a := (a-b)*b
+        x += "    inb = _mm_sub_pd(ones, inb);\n" # b := 1-b
+        x += "    ina = _mm_mul_pd(ina, inb);\n"  # a := (a-b)*b*(1-b)
+        x += "    _mm_store_pd(c + #{i}, ina);\n"
+        i += 2
+        len -= 2
+      end
+    else
+      x += "    ones = _mm_set1_ps(1.0f);\n"
+      while (len >= 4)
+        x += "    ina = _mm_load_ps(a + #{i});\n"
+        x += "    inb = _mm_load_ps(b + #{i});\n"
+        x += "    ina = _mm_sub_ps(ina, inb);\n"  # a := a-b
+        x += "    ina = _mm_mul_ps(ina, inb);\n"  # a := (a-b)*b
+        x += "    inb = _mm_sub_ps(ones, inb);\n" # b := 1-b
+        x += "    ina = _mm_mul_ps(ina, inb);\n"  # a := (a-b)*b*(1-b)
+        x += "    _mm_store_ps(c + #{i}, ina);\n"
+        i += 4
+        len -= 4
+      end
+    end
+  end
+
+  while (len > 0) 
+    x += "    bf = b[#{i}];\n"
+    x += "    c[#{i}] = (a[#{i}] - bf) * bf * (1 - bf);\n"
     i += 1
     len -= 1
   end
@@ -438,7 +496,9 @@ def sum_scaled(len)
 end
 
 
-def mul_sig_prime(len)
+def mul_tanh_prime(len)
+  # multiplies scaled delta (out) by tanh-prime (from in)
+  # If quantized, be sure to pass in unquantized node value
   io = 0
   oo = 0
     
@@ -446,21 +506,22 @@ def mul_sig_prime(len)
   if (len > 8)
     x += "__attribute__((noinline)) "
   end
-  x += "static void mul_sig_prime_#{len}(#{$float} *in, #{$float} *out) {\n"
+  x += "static void mul_tanh_prime_#{len}(#{$float} *in, "
+  x += "#{$float} *out) {\n"
   x += "    #{$float} i;\n"
     
   if $use_sse
     if $double
       if len >= 4
-        x += "    __m128d tgt, inp;\n"
-        #x += "    __m128d tgt, inp, one;\n"
-        #x += "    one = _mm_set1_pd(1.0);\n"
+        #x += "    __m128d tgt, inp;\n"
+        x += "    __m128d tgt, inp, one;\n"
+        x += "    one = _mm_set1_pd(1.0);\n"
         
         while (len >= 2)
           x += "    inp = _mm_load_pd(in+#{io});\n"
           x += "    tgt = _mm_load_pd(out+#{oo});\n"
-          #x += "    inp = _mm_mul_pd(inp, inp);\n"
-          #x += "    inp = _mm_sub_pd(one, inp);\n"
+          x += "    inp = _mm_mul_pd(inp, inp);\n"
+          x += "    inp = _mm_sub_pd(one, inp);\n"
           x += "    tgt = _mm_mul_pd(inp, tgt);\n"
           x += "    _mm_store_pd(out+#{oo}, tgt);\n"
 
@@ -471,15 +532,15 @@ def mul_sig_prime(len)
       end
     else
       if len >= 4
-        x += "    __m128 tgt, inp;\n"
-        #x += "    __m128 tgt, inp, one;\n"
-        #x += "    one = _mm_set1_ps(1.0f);\n"
+        #x += "    __m128 tgt, inp;\n"
+        x += "    __m128 tgt, inp, one;\n"
+        x += "    one = _mm_set1_ps(1.0f);\n"
         
         while (len >= 4)
           x += "    inp = _mm_load_ps(in+#{io});\n"
           x += "    tgt = _mm_load_ps(out+#{oo});\n"
-          #x += "    inp = _mm_mul_ps(inp, inp);\n"
-          #x += "    inp = _mm_sub_ps(one, inp);\n"
+          x += "    inp = _mm_mul_ps(inp, inp);\n"
+          x += "    inp = _mm_sub_ps(one, inp);\n"
           x += "    tgt = _mm_mul_ps(inp, tgt);\n"
           x += "    _mm_store_ps(out+#{oo}, tgt);\n"
 
@@ -493,12 +554,85 @@ def mul_sig_prime(len)
     
   while len > 0
     x += "    i = in[#{io}];\n"
-    x += "    out[#{oo}] *= i;\n"
-    #if $double
-      #x += "    out[#{oo}] *= 1.0 - i*i;\n"
-    #else
-      #x += "    out[#{oo}] *= 1.0f - i*i;\n"
-    #end
+    #x += "    out[#{oo}] *= i;\n"
+    if $double
+      x += "    out[#{oo}] *= 1.0 - i*i;\n"
+    else
+      x += "    out[#{oo}] *= 1.0f - i*i;\n"
+    end
+    io += 1
+    oo += 1
+    len -= 1
+  end
+    
+  x + "}\n\n"
+end
+
+
+def mul_logistic_prime(len)
+  # multiplies scaled delta (out) by logistic-prime (from in)
+  # If quantized, be sure to pass in unquantized node value
+  io = 0
+  oo = 0
+    
+  x = ""
+  if (len > 8)
+    x += "__attribute__((noinline)) "
+  end
+  x += "static void mul_logistic_prime_#{len}(#{$float} *in, "
+  x += "#{$float} *out) {\n"
+  x += "    #{$float} i;\n"
+    
+  if $use_sse
+    if $double
+      if len >= 4
+        #x += "    __m128d tgt, inp;\n"
+        x += "    __m128d tgt, inp, one;\n"
+        x += "    one = _mm_set1_pd(1.0);\n"
+        
+        while (len >= 2)
+          x += "    inp = _mm_load_pd(in+#{io});\n"
+          x += "    tgt = _mm_load_pd(out+#{oo});\n"
+          x += "    tgt = _mm_mul_pd(inp, tgt);\n"
+          x += "    inp = _mm_sub_pd(one, inp);\n"
+          x += "    tgt = _mm_mul_pd(inp, tgt);\n"
+          x += "    _mm_store_pd(out+#{oo}, tgt);\n"
+
+          io += 2
+          oo += 2
+          len -= 2
+        end
+      end
+    else
+      if len >= 4
+        #x += "    __m128 tgt, inp;\n"
+        x += "    __m128 tgt, inp, one;\n"
+        x += "    one = _mm_set1_ps(1.0f);\n"
+        
+        while (len >= 4)
+          x += "    inp = _mm_load_ps(in+#{io});\n"
+          x += "    tgt = _mm_load_ps(out+#{oo});\n"
+          x += "    tgt = _mm_mul_ps(inp, tgt);\n"
+          x += "    inp = _mm_sub_ps(one, inp);\n"
+          x += "    tgt = _mm_mul_ps(inp, tgt);\n"
+          x += "    _mm_store_ps(out+#{oo}, tgt);\n"
+
+          io += 4
+          oo += 4
+          len -= 4
+        end
+      end
+    end
+  end
+    
+  while len > 0
+    x += "    i = in[#{io}];\n"
+    #x += "    out[#{oo}] *= i;\n"
+    if $double
+      x += "    out[#{oo}] *= i * (1.0 - i);\n"
+    else
+      x += "    out[#{oo}] *= i * (1.0f - i);\n"
+    end
     io += 1
     oo += 1
     len -= 1
@@ -511,7 +645,7 @@ end
 
 # NOTE:  For only four, SSE is actually slower
 
-def emit_tanh_float()
+def scalar_tanh_float()
   x =  "static float tanh_approx(float x) {\n"
   x += "    union { unsigned int i; float f; } u, v;\n"
   x += "    float a, b;\n"
@@ -527,7 +661,7 @@ def emit_tanh_float()
   x
 end
 
-def emit_tanh_double()
+def scalar_tanh_double()
   x =  "static double tanh_approx(double x) {\n"
   x += "    union { unsigned long long i; double f; } u, v;\n"
   x += "    double a, b;\n"
@@ -543,14 +677,46 @@ def emit_tanh_double()
   x
 end
 
+def scalar_logistic_float()
+  x =  "static float logistic_approx(float x) {\n"
+  x += "    union { unsigned int i; float f; } u, v;\n"
+  x += "    float a, b;\n"
+  x += "    const float scale = 8388608.0 / log(2.0);\n"
+  x += "    const float offset = 1065353216;\n"
+  x += "    x *= scale;\n"
+  x += "    u.i = lrintf(x + offset);\n"   # e^x
+  x += "    v.i = lrintf(offset - x);\n"   # e^(-x)
+  x += "    a = 1.0f / (1.0f + u.f);\n"
+  x += "    b = 1.0f / (1.0f + v.f);\n"
+  x += "    return (b-a+1.0f)*0.5f;\n"
+  x += "}\n\n"
+  x
+end
+
+def scalar_logistic_double()
+  x =  "static double logistic_approx(double x) {\n"
+  x += "    union { unsigned long long i; double f; } u, v;\n"
+  x += "    double a, b;\n"
+  x += "    const double scale = 4503599627370496.0 / log(2.0);\n"
+  x += "    const double offset = 4607182418800017408.0;\n"
+  x += "    x *= scale;\n"
+  x += "    u.i = lrintf(x + offset);\n"   # e^x
+  x += "    v.i = lrintf(offset - x);\n"   # e^(-x)
+  x += "    a = 1.0 / (1.0 + u.f);\n"
+  x += "    b = 1.0 / (1.0 + v.f);\n"
+  x += "    return (b-a+1.0)*0.5;\n"
+  x += "}\n\n"
+  x
+end
 
 
-def sigmoid(len, net)
+
+def emit_tanh(len, net)
   io = 0
-  x = "__attribute__((noinline)) static void sigmoid_#{len}(#{$float} *in, #{$float} *sigp) {\n"
+  x = "__attribute__((noinline)) static void tanh_#{len}(#{$float} *in) {\n"
 
   if $double
-    net.need_tanh = true
+    net.need_scalar_tanh = true
     x += "    double v;\n"
     if (len > 1)
       x += "    int i;\n"
@@ -558,10 +724,9 @@ def sigmoid(len, net)
     end
     x += "        v = *in;\n"
     x += "        v = tanh_approx(v);\n"
-    x += "        *sigp = 1.0 - v*v;\n"
     x += "        *in = v;\n"
     if (len > 1)
-      x += "        sigp++; in++;\n"
+      x += "        in++;\n"
       x += "    }\n"
     end
   else
@@ -586,16 +751,13 @@ def sigmoid(len, net)
       x += "        a = _mm_div_ps(_mm_sub_ps(u, Fone), _mm_add_ps(u, Fone));\n"
       x += "        b = _mm_div_ps(_mm_sub_ps(v, Fone), _mm_add_ps(v, Fone));\n"
       x += "        a = _mm_mul_ps(_mm_sub_ps(a, b), Fhalf);\n"
-      x += "        b = _mm_sub_ps(Fone, _mm_mul_ps(a, a));\n"
       x += "        _mm_store_ps(in, a);\n"
-      x += "        _mm_store_ps(sigp, b);\n"
       if (loops > 1)
         x += "        in += 4;\n"
-        x += "        sigp += 4;\n"
         x += "    }\n"
       end
     else
-      net.need_tanh = true
+      net.need_scalar_tanh = true
       x += "    float v;\n"
       if (len > 1)
         x += "    int i;\n"
@@ -603,10 +765,75 @@ def sigmoid(len, net)
       end
       x += "        v = *in;\n"
       x += "        v = tanh_approx(v);\n"
-      x += "        *sigp = 1.0f - v*v;\n"
       x += "        *in = v;\n"
       if (len > 1)
-        x += "       sigp++; in++;\n"
+        x += "       in++;\n"
+        x += "    }\n"
+      end
+    end
+  end
+  
+  x + "}\n\n"
+end
+
+
+def emit_logistic(len, net)
+  io = 0
+  x = "__attribute__((noinline)) static void logistic_#{len}(#{$float} *in) {\n"
+
+  if $double
+    net.need_scalar_logistic = true
+    x += "    double v;\n"
+    if (len > 1)
+      x += "    int i;\n"
+      x += "    for (i=0; i<#{len}; i++) {\n"
+    end
+    x += "        v = *in;\n"
+    x += "        v = tanh_approx(v);\n"
+    x += "        *in = v;\n"
+    if (len > 1)
+      x += "        in++;\n"
+      x += "    }\n"
+    end
+  else
+    if $use_sse && (len>1)
+      x += "    const float Dscale = 8388608.0 / log(2.0);\n"
+      x += "    __m128 Fscale = _mm_set1_ps(Dscale);\n"
+      x += "    __m128 Foffset = _mm_set1_ps(1065353216.0);\n"
+      x += "    __m128 Fone = _mm_set1_ps(1.0);\n"
+      x += "    __m128 Fhalf = _mm_set1_ps(0.5);\n"
+      x += "    __m128 x, u, v, a, b;\n"
+      loops = (len+3)/4
+      if (loops > 1)
+        x += "    int i;\n"
+        x += "    for (i=0; i<#{loops}; i++) {\n"
+      end
+      x += "        x = _mm_load_ps(in);\n"
+      x += "        x = _mm_mul_ps(x, Fscale);\n"
+      x += "        u = _mm_add_ps(x, Foffset);\n"
+      x += "        u = (__m128)_mm_cvtps_epi32(u);\n"    # e^x
+      x += "        v = _mm_sub_ps(Foffset, x);\n"
+      x += "        v = (__m128)_mm_cvtps_epi32(v);\n"    # e^(-x)
+      x += "        a = _mm_rcp_ps(_mm_add_ps(u, Fone));\n"
+      x += "        b = _mm_rcp_ps(_mm_add_ps(v, Fone));\n"
+      x += "        a = _mm_mul_ps(_mm_add_ps(Fone, _mm_sub_ps(b, a)), Fhalf);\n"
+      x += "        _mm_store_ps(in, a);\n"
+      if (loops > 1)
+        x += "        in += 4;\n"
+        x += "    }\n"
+      end
+    else
+      net.need_scalar_logistic = true
+      x += "    float v;\n"
+      if (len > 1)
+        x += "    int i;\n"
+        x += "    for (i=0; i<#{len}; i++) {\n"
+      end
+      x += "        v = *in;\n"
+      x += "        v = tanh_approx(v);\n"
+      x += "        *in = v;\n"
+      if (len > 1)
+        x += "       in++;\n"
         x += "    }\n"
       end
     end
@@ -664,9 +891,9 @@ end
 
 class Layer
   # Inputs
-  attr_accessor :n_in, :in_val, :in_del, :in_sig_prime
+  attr_accessor :n_in, :in_val, :in_del, :in_qval
   # Outputs
-  attr_accessor :n_out, :out_val, :out_del, :sig, :val_offset, :out_sig_prime
+  attr_accessor :n_out, :out_val, :out_del, :sig, :val_offset, :out_qval
   # Weights
   attr_accessor :weights
   attr_accessor :mynum
@@ -684,7 +911,7 @@ class LayerSpec
   def initialize(word, input)
     @input = input
     @quantize = false
-    @sigmoid = true
+    @sigmoid = :tanh
     @quanti = 0
     @quantf = 0
 
@@ -697,8 +924,15 @@ class LayerSpec
     end
     @size = size_s.to_i
 
-    if word.size > 0 && word[0] =~ /[ls]/
-      @sigmoid = false if word[0] == 'l'
+    if word.size > 0 && word[0] =~ /[lst]/
+      case word[0]
+      when 't'
+        @sigmoid = :tanh
+      when 's'
+        @sigmoid = :logistic
+      else
+        @sigmoid = :linear
+      end      
       word.shift
     end
 
@@ -724,8 +958,11 @@ class LayerSpec
   def comment
     x = "#{@size} nodes"
     if !@input
-      if @sigmoid
+      case @sigmoid
+      when :tanh
         x += ", tanh activation"
+      when :logistic
+        x += ", logistic activation"
       else
         x += ", linear activation"
       end
@@ -735,12 +972,23 @@ class LayerSpec
     end
     x
   end
+  
+  def sigmoid_symbol
+    case @sigmoid
+    when :logistic
+      return 's'
+    when :tanh
+      return 't'
+    else
+      return 'l'
+    end
+  end
 
   def to_s
     if @input
-      "#{size}"
+      "#{@size}"
     else
-      "#{@size}#{@sigmoid ? 's' : 'l'}#{@quantize ? "q" : ""}"
+      "#{@size}#{sigmoid_symbol}#{@quantize ? "q" : ""}"
     end
   end
 end
@@ -751,8 +999,12 @@ class Network
   attr_accessor :layers, :name, :outsig, :in_tmp, :mem_size, :out_tmp
 
   # Pending needs
-  attr_accessor :need_dotprod, :need_sum_scaled, :need_mul_sig_prime
-  attr_accessor :need_subtract, :need_subtract_sig, :need_sigmoid, :need_tanh
+  attr_accessor :need_dotprod, :need_sum_scaled
+  attr_accessor :need_mul_tanh_prime, :need_mul_logistic_prime
+  attr_accessor :need_subtract
+  attr_accessor :need_subtract_tanh, :need_subtract_logistic
+  attr_accessor :need_tanh, :need_logistic
+  attr_accessor :need_scalar_tanh, :need_scalar_logistic
   attr_accessor :need_copy, :need_clear
 
   # Functions
@@ -806,16 +1058,20 @@ class Network
   
   def initialize(layer_list)
     @mem_size = 0
-    @need_sigmoid = []
+    @need_logistic = []
+    @need_tanh = []
     @need_dotprod = []
     @need_sum_scaled = []
-    @need_mul_sig_prime = []
+    @need_mul_tanh_prime = []
+    @need_mul_logistic_prime = []
     @need_subtract = []
-    @need_subtract_sig = []
+    @need_subtract_tanh = []
+    @need_subtract_logistic = []
     @need_copy = []
     @need_clear = []
     @need_quantize = []
-    @need_tanh = false
+    @need_scalar_tanh = false
+    @need_scalar_logistic = false
         
     @defines = allocate(layer_list)
     @out_tmp = "(mem+#{allocate_block(layer_list[-1].size)})"
@@ -823,12 +1079,15 @@ class Network
     @fwd = forward
     @bkw = backward
         
-    @need_sigmoid.uniq!
+    @need_logistic.uniq!
+    @need_tanh.uniq!
     @need_dotprod.uniq!
     @need_sum_scaled.uniq!
-    @need_mul_sig_prime.uniq!
+    @need_mul_tanh_prime.uniq!
+    @need_mul_logistic_prime.uniq!
     @need_subtract.uniq!
-    @need_subtract_sig.uniq!
+    @need_subtract_tanh.uniq!
+    @need_subtract_logistic.uniq!
     @need_copy.uniq!
     @need_clear.uniq!
     @need_quantize.uniq!
@@ -839,21 +1098,31 @@ class Network
     @need_quantize.each { |i| @funcs += quantize(i[0], i[1], i[2]); }
 
     sigfuncs = ""
-    @need_sigmoid.each { |i| sigfuncs += sigmoid(i, self); }
-    if @need_tanh
+    @need_tanh.each { |i| sigfuncs += emit_tanh(i, self); }
+    @need_logistic.each { |i| sigfuncs += emit_logistic(i, self); }
+    @funcs += sigfuncs
+    if @need_scalar_tanh
       if $double
-        @funcs += emit_tanh_double()
+        @funcs += scalar_tanh_double()
       else
-        @funcs += emit_tanh_float()
+        @funcs += scalar_tanh_float()
       end
     end
-    @funcs += sigfuncs
+    if @need_scalar_logistic
+      if $double
+        @funcs += scalar_logistic_double()
+      else
+        @funcs += scalar_logistic_float()
+      end
+    end
 
     @need_dotprod.each { |i| @funcs += dotprod(i); }
     @need_sum_scaled.each { |i| @funcs += sum_scaled(i); }
-    @need_mul_sig_prime.each { |i| @funcs += mul_sig_prime(i); }
+    @need_mul_tanh_prime.each { |i| @funcs += mul_tanh_prime(i); }
+    @need_mul_logistic_prime.each { |i| @funcs += mul_logistic_prime(i); }
     @need_subtract.each { |i| @funcs += subtract(i); }
-    @need_subtract_sig.each { |i| @funcs += subtract_sig(i); }
+    @need_subtract_tanh.each { |i| @funcs += subtract_tanh_prime(i); }
+    @need_subtract_logistic.each { |i| @funcs += subtract_logistic_prime(i); }
     @need_copy.each { |i| @funcs += memcpy(i); }
     @need_clear.each { |i| @funcs += memclr(i); }
         
@@ -899,7 +1168,7 @@ class Network
     @in_tmp = "IN_TMP"
     prev_val = "IN_TMP"
     prev_del = nil
-    prev_sig_prime = nil
+    prev_qval = "IN_TMP"
         
     ln = 1
             
@@ -907,15 +1176,22 @@ class Network
       layerspec = l.shift
       nnodes = layerspec.size
 
+      # Unquantized values
       values = allocate_block(nnodes)
       val_ptr = "(mem+#{values})"
       x += "#define L#{ln}_VAL #{val_ptr}\n"
       val_ptr = "L#{ln}_VAL"
 
-      sigp = allocate_block(nnodes);
-      sigp_ptr = "(mem+#{sigp})"
-      x += "#define L#{ln}_SIGP #{sigp_ptr}\n"
-      sigp_ptr = "L#{ln}_SIGP"
+      if (layerspec.quantize)
+        # Quantized values
+        qval = allocate_block(nnodes);
+        qval_ptr = "(mem+#{qval})"
+        x += "#define L#{ln}_QVAL #{qval_ptr}\n"
+        qval_ptr = "L#{ln}_QVAL"
+      else
+        qval = values
+        qval_ptr = val_ptr
+      end
             
       deltas = allocate_block(nnodes)
       del_ptr = "(mem+#{deltas})"
@@ -926,10 +1202,10 @@ class Network
       layer.n_in = prev_nnodes
       layer.n_out = nnodes
       layer.in_val = prev_val
-      layer.in_sig_prime = prev_sig_prime
+      layer.in_qval = prev_qval
       layer.out_val = val_ptr
-      layer.out_sig_prime = sigp_ptr
-      layer.val_offset = values
+      layer.out_qval = qval_ptr
+      layer.val_offset = qval   # Assume want to peek at quantized values
       layer.in_del = prev_del
       layer.out_del = del_ptr
       layer.quantize = layerspec.quantize
@@ -949,7 +1225,7 @@ class Network
             
       prev_nnodes = nnodes
       prev_val = val_ptr
-      prev_sig_prime = sigp_ptr
+      prev_qval = qval_ptr
       prev_del = del_ptr
             
       ln += 1
@@ -990,28 +1266,32 @@ class Network
       nnodes = layer.n_out
       prev_nnodes = layer.n_in
       ptr = layer.out_val
-      sigp = layer.out_sig_prime
+      qptr = layer.out_qval
             
       @need_dotprod << prev_nnodes
             
       for i in 0...nnodes do
         weights = layer.weights[i]
         x += "    *(#{ptr}+#{i}) = "
-        x += "dotprod_#{prev_nnodes}(#{weights}, #{layer.in_val}) "
+        x += "dotprod_#{prev_nnodes}(#{weights}, #{layer.in_qval}) "
         x += "+ *(#{weights}+#{layer.n_in});\n";
       end
             
-      if (layer.sig)
-        @need_sigmoid << nnodes
-        x += "    sigmoid_#{nnodes}(#{ptr}, #{sigp});\n"
+      case layer.sig
+      when :tanh
+        @need_tanh << nnodes
+        x += "    tanh_#{nnodes}(#{ptr});\n"
+      when :logistic
+        @need_logistic << nnodes
+        x += "    logistic_#{nnodes}(#{ptr});\n"
       end
 
       if (layer.quantize)
         @need_quantize << [nnodes, layer.quanti, layer.quantf]
-        x += "    quantize_#{nnodes}_#{layer.quanti}_#{layer.quantf}(#{ptr});\n"
+        x += "    quantize_#{nnodes}_#{layer.quanti}_#{layer.quantf}(#{ptr}, #{qptr});\n"
       end
 
-      x += "    return #{layer.out_val};\n"
+      x += "    return #{layer.out_qval};\n"
       
       x += "}\n\n"
     end
@@ -1049,9 +1329,13 @@ class Network
     out_val = layers.last.out_val
     n_out = layers.last.n_out
     x += "    /* Compute output deltas */\n"
-    if (layers.last.sig)
-      @need_subtract_sig << n_out
-      x += "    subtract_sig_#{n_out}(OUT_TMP, #{out_val}, #{out_del});\n"
+    case layers.last.sig
+    when :tanh
+      @need_subtract_tanh << n_out
+      x += "    subtract_tanh_prime_#{n_out}(OUT_TMP, #{out_val}, #{out_del});\n"
+    when :logistic
+      @need_subtract_logistic << n_out
+      x += "    subtract_logistic_prime_#{n_out}(OUT_TMP, #{out_val}, #{out_del});\n"
     else
       @need_subtract << n_out
       x += "    subtract_#{n_out}(OUT_TMP, #{out_val}, #{out_del});\n"
@@ -1071,10 +1355,15 @@ class Network
         x += "    sum_scaled_#{l.n_in}(#{l.weights[i]}, #{l.in_del}, "
         x += "*(#{l.out_del}+#{i}));\n"
       end
-# XXX Oops.  Assumes that every non-output layer is tanh!
-      @need_mul_sig_prime << l.n_in
-      #x += "    mul_sig_prime_#{l.n_in}(#{l.in_val}, #{l.in_del});\n"
-      x += "    mul_sig_prime_#{l.n_in}(#{l.in_sig_prime}, #{l.in_del});\n"
+      
+      case l.sig
+      when :tanh
+        @need_mul_sig_prime << l.n_in
+        x += "    mul_tanh_prime_#{l.n_in}(#{l.in_val}, #{l.in_del});\n"
+      when :logistic
+        @need_mul_logistic_prime << l.n_in
+        x += "    mul_logistic_prime_#{l.n_in}(#{l.in_val}, #{l.in_del});\n"
+      end
     end
         
     # Loop over layers, adjusting weights
