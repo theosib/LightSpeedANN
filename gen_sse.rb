@@ -1358,7 +1358,7 @@ class Network
       
       case l.sig
       when :tanh
-        @need_mul_sig_prime << l.n_in
+        @need_mul_tanh_prime << l.n_in
         x += "    mul_tanh_prime_#{l.n_in}(#{l.in_val}, #{l.in_del});\n"
       when :logistic
         @need_mul_logistic_prime << l.n_in
