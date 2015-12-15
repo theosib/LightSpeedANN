@@ -642,6 +642,108 @@ def mul_logistic_prime(len)
 end
 
 
+def mul_relu_hard_prime(len)
+  # multiplies scaled delta (out) by relu-hard-prime (from in)
+  # If quantized, be sure to pass in unquantized node value
+  # This also assumes that "in" is the pre-activation node signal
+  io = 0
+  oo = 0
+    
+  x = ""
+  if (len > 8)
+    x += "__attribute__((noinline)) "
+  end
+  x += "static void mul_relu_hard_prime_#{len}(#{$float} *in, "
+  x += "#{$float} *out) {\n"
+  x += "    #{$float} i;\n"
+    
+  if $use_sse
+    if $double
+      if len >= 4
+        #x += "    __m128d tgt, inp;\n"
+        x += "    __m128d tgt, inp, one, zero;\n"
+        x += "    one = _mm_set1_pd(1.0);\n"
+        x += "    zero = _mm_setzero_pd();\n"
+        
+        while (len >= 2)
+          x += "    inp = _mm_load_pd(in+#{io});\n"
+          x += "    tgt = _mm_load_pd(out+#{oo});\n"
+          x += "    inp = _mm_cmpgt_pd(inp, zero);\n"
+          x += "    inp = _mm_and_pd(inp, one);\n"
+          x += "    tgt = _mm_mul_pd(inp, tgt);\n"
+          x += "    _mm_store_pd(out+#{oo}, tgt);\n"
+
+          io += 2
+          oo += 2
+          len -= 2
+        end
+      end
+    else
+      if len >= 4
+        #x += "    __m128 tgt, inp;\n"
+        x += "    __m128 tgt, inp, one, zero;\n"
+        x += "    one = _mm_set1_ps(1.0f);\n"
+        x += "    zero = _mm_setzero_ps();\n"
+        
+        while (len >= 4)
+          x += "    inp = _mm_load_ps(in+#{io});\n"
+          x += "    tgt = _mm_load_ps(out+#{oo});\n"
+          x += "    inp = _mm_cmpgt_ps(inp, zero);\n"
+          x += "    inp = _mm_and_ps(inp, one);\n"
+          x += "    tgt = _mm_mul_ps(inp, tgt);\n"
+          x += "    _mm_store_ps(out+#{oo}, tgt);\n"
+
+          io += 4
+          oo += 4
+          len -= 4
+        end
+      end
+    end
+  end
+    
+  while len > 0
+    x += "    i = in[#{io}];\n"
+    if $double
+      x += "    out[#{oo}] *= (i>0.0) ? 1.0 : 0.0;\n"
+    else
+      x += "    out[#{oo}] *= (i>0.0f) ? 1.0f 0.0f;\n"
+    end
+    io += 1
+    oo += 1
+    len -= 1
+  end
+    
+  x + "}\n\n"
+end
+
+
+def mul_relu_soft_prime(len)
+  # multiplies scaled delta (out) by relu-soft-prime (from in)
+  # If quantized, be sure to pass in unquantized node value
+  # This also assumes that "in" is the pre-activation node signal
+  io = 0
+  oo = 0
+    
+  x = ""
+  if (len > 8)
+    x += "__attribute__((noinline)) "
+  end
+  x += "static void mul_relu_soft_prime_#{len}(#{$float} *in, "
+  x += "#{$float} *out) {\n"
+  x += "    #{$float} i;\n"
+      
+  while len > 0
+    x += "    i = 1.0 / (1.0 + exp(-in[#{io}]));\n"
+    x += "    out[#{oo}] *= i;\n"
+    io += 1
+    oo += 1
+    len -= 1
+  end
+    
+  x + "}\n\n"
+end
+
+
 
 # NOTE:  For only four, SSE is actually slower
 
@@ -789,7 +891,7 @@ def emit_logistic(len, net)
       x += "    for (i=0; i<#{len}; i++) {\n"
     end
     x += "        v = *in;\n"
-    x += "        v = tanh_approx(v);\n"
+    x += "        v = logistic_approx(v);\n"
     x += "        *in = v;\n"
     if (len > 1)
       x += "        in++;\n"
@@ -830,7 +932,7 @@ def emit_logistic(len, net)
         x += "    for (i=0; i<#{len}; i++) {\n"
       end
       x += "        v = *in;\n"
-      x += "        v = tanh_approx(v);\n"
+      x += "        v = logistic_approx(v);\n"
       x += "        *in = v;\n"
       if (len > 1)
         x += "       in++;\n"
@@ -839,6 +941,98 @@ def emit_logistic(len, net)
     end
   end
   
+  x + "}\n\n"
+end
+
+
+
+def emit_relu_hard(len, net, separate_out)
+  io = 0
+  if separate_out
+    x = "__attribute__((noinline)) static void relu_hard_#{len}(#{$float} *in, #{$float} *out) {\n"
+  else
+    x = "__attribute__((noinline)) static void relu_hard_#{len}(#{$float} *in) {\n"
+  end
+
+  if $double
+    x += "    double v;\n"
+    if (len > 1)
+      x += "    int i;\n"
+      x += "    for (i=0; i<#{len}; i++) {\n"
+    end
+    x += "        v = *in;\n"
+    x += "        v = (v>0) v : 0;\n"
+    if (separate_out)
+      x += "        *out = v;\n"
+    else
+      x += "        *in = v;\n"
+    end
+    if (len > 1)
+      x += "        in++;\n"
+      x += "        out++;\n" if separate_out
+      x += "    }\n"
+    end
+  else
+    if $use_sse && (len>1)
+      x += "    __m128 zero = _mm_setzero_ps();\n"
+      x += "    __m128 x, y;\n"
+      loops = (len+3)/4
+      if (loops > 1)
+        x += "    int i;\n"
+        x += "    for (i=0; i<#{loops}; i++) {\n"
+      end
+      x += "        x = _mm_load_ps(in);\n"
+      x += "        y = _mm_cmpgt_ps(x,zero);\n"
+      x += "        x = _mm_and_ps(x, y);\n"
+      x += "        _mm_store_ps(in, x);\n"
+      if (loops > 1)
+        x += "        in += 4;\n"
+        x += "    }\n"
+      end
+    else
+      net.need_scalar_tanh = true
+      x += "    float v;\n"
+      if (len > 1)
+        x += "    int i;\n"
+        x += "    for (i=0; i<#{len}; i++) {\n"
+      end
+      x += "        v = *in;\n"
+      x += "        v = (v>0) v : 0;\n"
+      if (separate_out)
+        x += "        *out = v;\n"
+      else
+        x += "        *in = v;\n"
+      end
+      if (len > 1)
+        x += "        in++;\n"
+        x += "        out++;\n" if separate_out
+        x += "    }\n"
+      end
+    end
+  end
+  
+  x + "}\n\n"
+end
+
+def emit_relu_soft(len, net, separate_out)
+  io = 0
+  if separate_out
+    x = "__attribute__((noinline)) static void relu_soft_#{len}(#{$float} *in, #{$float} *out) {\n"
+  else
+    x = "__attribute__((noinline)) static void relu_soft_#{len}(#{$float} *in) {\n"
+  end
+
+  x += "    #{$float} v;\n"
+  x += "    int i;\n"
+  x += "    for (i=0; i<#{len}; i++) {\n"
+  x += "        v = *in;\n"
+  x += "        v = log(1.0 + exp(v));\n"
+  if (separate_out)
+    x += "        *out = v;  in++; out++;\n"
+  else
+    x += "        *in = v;  in++;\n"
+  end
+  x += "    }\n"
   x + "}\n\n"
 end
 
@@ -888,12 +1082,16 @@ end
 #   x
 # end
 
+$all_relu = [:relu_hh, :relu_hs, :relu_ss, :relu_sh]
+$to_relu = {"hh" => :relu_hh, "hs" => :relu_hs, "sh" => :relu_sh, "ss" => :relu_ss}
+$sig_symbol = {:tanh => "t", :logistic => "s", :linear => "l", :relu_hh => "rhh", :relu_hs => "rhs", :relu_sh => "rsh", :relu_ss => "rss"}
+
 
 class Layer
   # Inputs
-  attr_accessor :n_in, :in_val, :in_del, :in_qval
+  attr_accessor :n_in, :in_val, :in_del, :in_qval, :in_signal, :in_sig
   # Outputs
-  attr_accessor :n_out, :out_val, :out_del, :sig, :val_offset, :out_qval
+  attr_accessor :n_out, :out_val, :out_del, :sig, :val_offset, :out_qval, :out_signal
   # Weights
   attr_accessor :weights
   attr_accessor :mynum
@@ -903,10 +1101,19 @@ class Layer
   def initialize
     @weights = []
   end
+
+  def is_relu?
+    $all_relu.include?(@sig)
+  end
 end
+
 
 class LayerSpec
   attr_accessor :size, :quantize, :quanti, :quantf, :sigmoid, :input
+
+  def is_relu?
+    $all_relu.include?(@sigmoid)
+  end
 
   def initialize(word, input)
     @input = input
@@ -924,18 +1131,28 @@ class LayerSpec
     end
     @size = size_s.to_i
 
-    if word.size > 0 && word[0] =~ /[lst]/
+    if word.size > 0 && word[0] =~ /[lstr]/
       case word[0]
+      when 'r'
+        word.shift
+        hs = ""
+        while word.size > 0 && word[0] =~ /[hs]/
+          hs += word[0]
+          word.shift
+        end
+        @sigmoid = $to_relu[hs]
       when 't'
+        word.shift
         @sigmoid = :tanh
       when 's'
+        word.shift
         @sigmoid = :logistic
       else
+        word.shift
         @sigmoid = :linear
       end      
-      word.shift
     end
-
+    
     if word.size > 0 && word[0] == 'q'
       word.shift
       @quantize = true
@@ -963,8 +1180,10 @@ class LayerSpec
         x += ", tanh activation"
       when :logistic
         x += ", logistic activation"
-      else
+      when :linear
         x += ", linear activation"
+      else
+        x += ", #{@sigmoid} activation"
       end
     end
     if @quantize
@@ -974,14 +1193,7 @@ class LayerSpec
   end
   
   def sigmoid_symbol
-    case @sigmoid
-    when :logistic
-      return 's'
-    when :tanh
-      return 't'
-    else
-      return 'l'
-    end
+    $sig_symbol[@sigmoid]
   end
 
   def to_s
@@ -1060,8 +1272,12 @@ class Network
     @mem_size = 0
     @need_logistic = []
     @need_tanh = []
+    @need_relu_hard = []
+    @need_relu_soft = []
     @need_dotprod = []
     @need_sum_scaled = []
+    @need_mul_relu_hard_prime = []
+    @need_mul_relu_soft_prime = []
     @need_mul_tanh_prime = []
     @need_mul_logistic_prime = []
     @need_subtract = []
@@ -1082,9 +1298,13 @@ class Network
     @need_logistic.uniq!
     @need_tanh.uniq!
     @need_dotprod.uniq!
+    @need_relu_hard.uniq!
+    @need_relu_soft.uniq!
     @need_sum_scaled.uniq!
     @need_mul_tanh_prime.uniq!
     @need_mul_logistic_prime.uniq!
+    @need_mul_relu_hard_prime.uniq!
+    @need_mul_relu_soft_prime.uniq!
     @need_subtract.uniq!
     @need_subtract_tanh.uniq!
     @need_subtract_logistic.uniq!
@@ -1100,6 +1320,8 @@ class Network
     sigfuncs = ""
     @need_tanh.each { |i| sigfuncs += emit_tanh(i, self); }
     @need_logistic.each { |i| sigfuncs += emit_logistic(i, self); }
+    @need_relu_hard.each { |i| sigfuncs += emit_relu_hard(i, self, true); }
+    @need_relu_soft.each { |i| sigfuncs += emit_relu_soft(i, self, true); }
     @funcs += sigfuncs
     if @need_scalar_tanh
       if $double
@@ -1120,6 +1342,8 @@ class Network
     @need_sum_scaled.each { |i| @funcs += sum_scaled(i); }
     @need_mul_tanh_prime.each { |i| @funcs += mul_tanh_prime(i); }
     @need_mul_logistic_prime.each { |i| @funcs += mul_logistic_prime(i); }
+    @need_mul_relu_hard_prime.each { |i| @funcs += mul_relu_hard_prime(i); }
+    @need_mul_relu_soft_prime.each { |i| @funcs += mul_relu_soft_prime(i); }
     @need_subtract.each { |i| @funcs += subtract(i); }
     @need_subtract_tanh.each { |i| @funcs += subtract_tanh_prime(i); }
     @need_subtract_logistic.each { |i| @funcs += subtract_logistic_prime(i); }
@@ -1169,12 +1393,15 @@ class Network
     prev_val = "IN_TMP"
     prev_del = nil
     prev_qval = "IN_TMP"
+    prev_signal = "IN_TMP"
+    prev_sig = :linear
         
     ln = 1
             
     while (l.size > 0)
       layerspec = l.shift
       nnodes = layerspec.size
+      keep_signal = layerspec.is_relu?
 
       # Unquantized values
       values = allocate_block(nnodes)
@@ -1182,6 +1409,17 @@ class Network
       x += "#define L#{ln}_VAL #{val_ptr}\n"
       val_ptr = "L#{ln}_VAL"
 
+      # Signal values
+      if keep_signal
+        signal = allocate_block(nnodes)
+        signal_ptr = "(mem+#{signal})"
+        x += "#define L#{ln}_SIGNAL #{signal_ptr}"
+        signal_ptr = "L#{ln}_SIGNAL"
+      else
+        signal = values
+        signal_ptr = val_ptr
+      end
+      
       if (layerspec.quantize)
         # Quantized values
         qval = allocate_block(nnodes);
@@ -1205,6 +1443,8 @@ class Network
       layer.in_qval = prev_qval
       layer.out_val = val_ptr
       layer.out_qval = qval_ptr
+      layer.out_signal = signal_ptr
+      layer.in_signal = prev_signal
       layer.val_offset = qval   # Assume want to peek at quantized values
       layer.in_del = prev_del
       layer.out_del = del_ptr
@@ -1213,6 +1453,7 @@ class Network
       layer.quantf = layerspec.quantf
       layer.sig = layerspec.sigmoid
       layer.mynum = ln
+      layer.in_sig = prev_sig
             
       for i in 0...nnodes do
         weights = allocate_block(prev_nnodes + 1)
@@ -1227,9 +1468,13 @@ class Network
       prev_val = val_ptr
       prev_qval = qval_ptr
       prev_del = del_ptr
+      prev_signal = signal_ptr
+      prev_sig = layerspec.sigmoid
             
       ln += 1
     end
+    
+    x += " allocated #{@layers.size} layers"
         
     x
   end
@@ -1259,20 +1504,23 @@ class Network
     @need_copy << layers.first.n_in
     x = ""
 
-    layers.each do |layer|
+    @layers.each do |layer|
       x += "__attribute__((noinline)) "
       x += "#{$float} *forward_L#{layer.mynum}_#{@name}(#{$float} *mem) {\n"
 
       nnodes = layer.n_out
       prev_nnodes = layer.n_in
+      signal = layer.out_signal
       ptr = layer.out_val
       qptr = layer.out_qval
+      keep_signal = layer.is_relu?
+      dprod_ptr = keep_signal ? signal : ptr
             
       @need_dotprod << prev_nnodes
             
       for i in 0...nnodes do
         weights = layer.weights[i]
-        x += "    *(#{ptr}+#{i}) = "
+        x += "    *(#{dprod_ptr}+#{i}) = "
         x += "dotprod_#{prev_nnodes}(#{weights}, #{layer.in_qval}) "
         x += "+ *(#{weights}+#{layer.n_in});\n";
       end
@@ -1280,10 +1528,16 @@ class Network
       case layer.sig
       when :tanh
         @need_tanh << nnodes
-        x += "    tanh_#{nnodes}(#{ptr});\n"
+        x += "    tanh_#{nnodes}(#{dprod_ptr});\n"
       when :logistic
         @need_logistic << nnodes
-        x += "    logistic_#{nnodes}(#{ptr});\n"
+        x += "    logistic_#{nnodes}(#{dprod_ptr});\n"
+      when :relu_hh, :relu_hs
+        @need_relu_hard << nnodes
+        x += "    relu_hard_#{nnodes}(#{signal}, #{ptr});\n"
+      when :relu_sh, :relu_ss
+        @need_relu_soft << nnodes
+        x += "    relu_soft_#{nnodes}(#{signal}, #{ptr});\n"
       end
 
       if (layer.quantize)
@@ -1321,7 +1575,7 @@ class Network
     x = "__attribute__((noinline)) "
     x += "void backward_#{@name}(#{$float} *desired, #{$float} *mem, #{$float} lr) {\n"
     x += "    #{$float} odel;\n"
-    @need_copy << layers.last.n_out
+    @need_copy << @layers.last.n_out
     x += "    memory_copy_#{layers.last.n_out}(OUT_TMP, desired);\n\n"
         
     # Compute output deltas from output values and desired
@@ -1329,7 +1583,7 @@ class Network
     out_val = layers.last.out_val
     n_out = layers.last.n_out
     x += "    /* Compute output deltas */\n"
-    case layers.last.sig
+    case @layers.last.sig
     when :tanh
       @need_subtract_tanh << n_out
       x += "    subtract_tanh_prime_#{n_out}(OUT_TMP, #{out_val}, #{out_del});\n"
@@ -1342,11 +1596,13 @@ class Network
     end
         
     # Loop backward over layers, computing deltas
-    ls = layers.clone
+    ls = @layers.dup
     ls.shift
     while (ls.size > 0)
-      x += "\n    /* Layer deltas */\n"
       l = ls.pop
+      x += "\n    /* Layer deltas #{l.mynum} */\n"
+      keep_signal = l.is_relu?
+      
       @need_sum_scaled << l.n_in
       @need_clear << l.n_in
       #x += "    memset(#{l.in_del}, 0, sizeof(float) * #{l.n_in});\n"
@@ -1355,19 +1611,25 @@ class Network
         x += "    sum_scaled_#{l.n_in}(#{l.weights[i]}, #{l.in_del}, "
         x += "*(#{l.out_del}+#{i}));\n"
       end
-      
-      case l.sig
+    
+      case l.in_sig
       when :tanh
         @need_mul_tanh_prime << l.n_in
         x += "    mul_tanh_prime_#{l.n_in}(#{l.in_val}, #{l.in_del});\n"
       when :logistic
         @need_mul_logistic_prime << l.n_in
         x += "    mul_logistic_prime_#{l.n_in}(#{l.in_val}, #{l.in_del});\n"
+      when :relu_hh, :relu_sh
+        @need_mul_relu_hard_prime << l.n_in
+        x += "    mul_relu_hard_prime_#{l.n_in}(#{l.in_signal}, #{l.in_del});\n"
+      when :relu_hs, :relu_ss
+        @need_mul_relu_soft_prime << l.n_in
+        x += "    mul_relu_soft_prime_#{l.n_in}(#{l.in_signal}, #{l.in_del});\n"
       end
     end
         
     # Loop over layers, adjusting weights
-    ls = layers.clone
+    ls = @layers.dup
     inputs = @in_tmp
     ls.each do |l|
       x += "\n    /* Adjust weights */\n"
