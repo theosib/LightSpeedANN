@@ -984,13 +984,17 @@ def emit_relu_hard(len, net, separate_out)
       x += "        x = _mm_load_ps(in);\n"
       x += "        y = _mm_cmpgt_ps(x,zero);\n"
       x += "        x = _mm_and_ps(x, y);\n"
-      x += "        _mm_store_ps(in, x);\n"
+      if (separate_out)
+        x += "        _mm_store_ps(out, x);\n"
+      else
+        x += "        _mm_store_ps(in, x);\n"
+      end
       if (loops > 1)
         x += "        in += 4;\n"
+        x += "        out += 4;\n" if separate_out
         x += "    }\n"
       end
     else
-      net.need_scalar_tanh = true
       x += "    float v;\n"
       if (len > 1)
         x += "    int i;\n"
@@ -1413,7 +1417,7 @@ class Network
       if keep_signal
         signal = allocate_block(nnodes)
         signal_ptr = "(mem+#{signal})"
-        x += "#define L#{ln}_SIGNAL #{signal_ptr}"
+        x += "#define L#{ln}_SIGNAL #{signal_ptr}\n"
         signal_ptr = "L#{ln}_SIGNAL"
       else
         signal = values
@@ -1472,10 +1476,7 @@ class Network
       prev_sig = layerspec.sigmoid
             
       ln += 1
-    end
-    
-    x += " allocated #{@layers.size} layers"
-        
+    end    
     x
   end
 
