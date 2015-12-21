@@ -41,6 +41,20 @@ def memclr(len)
     
     x += "    __m128 zero;\n"
     x += "    zero = _mm_setzero_ps();\n"
+    
+    if (len>=1024)
+      x += "    int i;  float *p;\n"
+      loops = len / 512
+      x += "    p = (float *)dst;\n"
+      x += "    for (i=0; i<#{loops}; i++) {\n"
+      (0..127).each do |j|
+        x += "        _mm_store_ps(p + #{j*4}, zero);\n"
+      end
+      x += "        p += 512;\n"
+      x += "    }\n"
+      i += loops * 512
+      len -= loops * 512
+    end
     while (len >= 4)
       x += "    _mm_store_ps((float *)dst + #{i}, zero);\n"
       i += 4
@@ -80,8 +94,22 @@ def memcpy(len)
     
     if (len >= 8)
       x += "    __m128 tmp;\n"
+      x += "    int i; float *s, *d;\n" if len>=512
       x += "    if (((long)src) & 0xf) {\n"
       i = 0
+      if (len >= 512)
+        loops = len / 256
+        x += "        s = (float *)src; d = (float *)dst;\n"
+        x += "        for (i=0; i<#{loops}; i++) {\n"
+        (0..63).each do |j|
+          x += "            tmp = _mm_loadu_ps(s + #{j*4});\n"
+          x += "            _mm_store_ps(d + #{j*4}, tmp);\n"
+        end
+        x += "            s += 256; d += 256;\n"
+        x += "        }\n"
+        len -= loops * 256
+        i += loops * 256
+      end          
       while (len >= 4)
         x += "        tmp = _mm_loadu_ps((float *)src + #{i});\n"
         x += "        _mm_store_ps((float *)dst + #{i}, tmp);\n"
@@ -90,6 +118,19 @@ def memcpy(len)
       end
       x += "    } else {\n"
       i = 0
+      if (len2 >= 512)
+        loops = len2 / 256
+        x += "        s = (float *)src; d = (float *)dst;\n"
+        x += "        for (i=0; i<#{loops}; i++) {\n"
+        (0..63).each do |j|
+          x += "            tmp = _mm_loadu_ps(s + #{j*4});\n"
+          x += "            _mm_store_ps(d + #{j*4}, tmp);\n"
+        end
+        x += "            s += 256; d += 256;\n"
+        x += "        }\n"
+        len2 -= loops * 256
+        i += loops * 256
+      end          
       while (len2 >= 4)
         x += "        tmp = _mm_load_ps((float *)src + #{i});\n"
         x += "        _mm_store_ps((float *)dst + #{i}, tmp);\n"
@@ -151,6 +192,22 @@ def subtract(len)
     else
       if len >= 4
         x += "    __m128 ina, inb;\n"
+        if (len >= 256)
+          x += "    int i; float *ai, *bi, *ci;\n"
+          loops = len / 128
+          x += "    ai = a; bi = b; ci = c;\n"
+          x += "    for (i=0; i<#{loops}; i++) {\n"
+          (0..31).each do |j|
+            x += "        ina = _mm_load_ps(ai + #{j*4});\n"
+            x += "        inb = _mm_load_ps(ib + #{j*4});\n"
+            x += "        ina = _mm_sub_ps(ina, inb);\n"
+            x += "        _mm_store_ps(ci + #{j*4}, ina);\n"
+          end
+          x += "        ai += 128; bi += 128; ci += 128;\n"
+          x += "    }"
+          i += loops * 128
+          len -= loops * 128
+        end
         while (len >= 4)
           x += "    ina = _mm_load_ps(a + #{i});\n"
           x += "    inb = _mm_load_ps(b + #{i});\n"
@@ -186,6 +243,8 @@ def subtract_tanh_prime(len)
     x += "    __m128 ina, inb, ones;\n"
   end
   x += "    #{$float} bf;\n"
+  x += "    #{$float} *ai, *bi, *ci;\n"
+  x += "    int i;\n"
   
   i = 0
   
@@ -205,6 +264,24 @@ def subtract_tanh_prime(len)
       end
     else
       x += "    ones = _mm_set1_ps(1.0f);\n"
+      if (len >= 128)
+        loops = len / 64
+        x += "    ai = a; bi = b; ci = c;\n"
+        x += "    for (i=0; i<#{loops}; i++) {\n"
+        (0..15).each do |j|
+          x += "        ina = _mm_load_ps(ai + #{j*4});\n"
+          x += "        inb = _mm_load_ps(bi + #{j*4});\n"
+          x += "        ina = _mm_sub_ps(ina, inb);\n"
+          x += "        inb = _mm_mul_ps(inb, inb);\n"    
+          x += "        inb = _mm_sub_ps(ones, inb);\n"
+          x += "        ina = _mm_mul_ps(inb, ina);\n"
+          x += "        _mm_store_ps(ci + #{j*4}, ina);\n"
+        end
+        x += "        ai += 64; bi += 64; ci += 64;\n"
+        x += "    }\n"
+        i += 64 * loops
+        len -= 64 * loops
+      end
       while (len >= 4)
         x += "    ina = _mm_load_ps(a + #{i});\n"
         x += "    inb = _mm_load_ps(b + #{i});\n"
@@ -244,6 +321,8 @@ def subtract_logistic_prime(len)
     x += "    __m128 ina, inb, ones;\n"
   end
   x += "    #{$float} bf;\n"
+  x += "    #{$float} *ai, *bi, *ci;\n"
+  x += "    int i;\n"
   
   i = 0
   
@@ -263,6 +342,24 @@ def subtract_logistic_prime(len)
       end
     else
       x += "    ones = _mm_set1_ps(1.0f);\n"
+      if (len >= 128)
+        loops = len / 64
+        x += "    ai = a; bi = b; ci = c;\n"
+        x += "    for (i=0; i<#{loops}; i++) {\n"
+        (0..15).each do |j|
+          x += "        ina = _mm_load_ps(ai + #{j*4});\n"
+          x += "        inb = _mm_load_ps(bi + #{j*4});\n"
+          x += "        ina = _mm_sub_ps(ina, inb);\n"  # a := a-b
+          x += "        ina = _mm_mul_ps(ina, inb);\n"  # a := (a-b)*b
+          x += "        inb = _mm_sub_ps(ones, inb);\n" # b := 1-b
+          x += "        ina = _mm_mul_ps(ina, inb);\n"  # a := (a-b)*b*(1-b)
+          x += "        _mm_store_ps(ci + #{j*4}, ina);\n"
+        end
+        x += "        ai += 64; bi += 64; ci += 64;\n"
+        x += "    }\n"
+        i += 64 * loops
+        len -= 64 * loops
+      end
       while (len >= 4)
         x += "    ina = _mm_load_ps(a + #{i});\n"
         x += "    inb = _mm_load_ps(b + #{i});\n"
@@ -345,6 +442,7 @@ def dotprod(len)
       x += "    _mm_store_sd(&sum0, total0);\n"
     else
       x += "    __m128 wei, inp, prod, total0, total1, total2, total3;\n"
+      x += "    float *v, *w;  int i;\n"
 
       got = 1
       x += "    inp    = _mm_load_ps(values+#{io});\n"
@@ -354,6 +452,42 @@ def dotprod(len)
       io += 4
       wo += 4
 
+      while (len >= 4 && (got!=15 || ((3&(io/4))!=0)))
+        y = 3&(io/4)
+        x += "    inp   = _mm_load_ps(values+#{io});\n"
+        x += "    wei   = _mm_load_ps(weights+#{wo});\n"
+        
+        if (0 != (got & (1<<y)))
+          x += "    prod  = _mm_mul_ps(inp, wei);\n"
+          x += "    total#{y} = _mm_add_ps(prod, total#{y});\n"
+        else
+          x += "    total#{y} = _mm_mul_ps(inp, wei);\n"
+          got |= 1<<y
+        end
+        
+        len -= 4
+        io += 4
+        wo += 4
+      end
+      
+      if (len >= 256)
+        loops = len/128
+        x += "    v = values + #{io}; w = weights + #{wo};\n"
+        x += "    for (i=0; i<#{loops}; i++) {\n"
+        (0..31).each do |j|
+          y = 3&(j)
+          x += "        inp   = _mm_load_ps(v+#{j*4});\n"
+          x += "        wei   = _mm_load_ps(w+#{j*4});\n"
+          x += "        prod  = _mm_mul_ps(inp, wei);\n"
+          x += "        total#{y} = _mm_add_ps(prod, total#{y});\n"
+        end
+        x += "        v += 128;  w += 128;\n"
+        x += "    }\n"
+        len -= loops * 128
+        io += loops * 128
+        wo += loops * 128
+      end
+        
       while (len >= 4)
         y = 3&(io/4)
         x += "    inp   = _mm_load_ps(values+#{io});\n"
@@ -468,7 +602,26 @@ def sum_scaled(len)
     else
       if (len >= 4)
         x += "    __m128 tgt, inp, sca;\n"
+        x += "    int i;  float *a, *b;\n" if (len >= 256)
         x += "    sca = _mm_set1_ps(scale);\n"
+      
+        if (len >= 256)
+          loops = len / 128
+          x += "    a = in;  b = out;\n"
+          x += "    for (i=0; i<#{loops}; i++) {\n"
+          (0..31).each do |j|
+            x += "        inp = _mm_load_ps(a+#{j*4});\n"
+            x += "        tgt = _mm_load_ps(b+#{j*4});\n"
+            x += "        inp = _mm_mul_ps(sca, inp);\n"
+            x += "        tgt = _mm_add_ps(inp, tgt);\n"
+            x += "        _mm_store_ps(b+#{j*4}, tgt);\n"
+          end
+          x += "        a += 128;  b += 128;\n"
+          x += "    }\n"
+          len -= loops * 128;
+          io += loops * 128;
+          oo += loops * 128;
+        end
       
         while (len >= 4)
           x += "    inp = _mm_load_ps(in+#{io});\n"
@@ -534,8 +687,28 @@ def mul_tanh_prime(len)
       if len >= 4
         #x += "    __m128 tgt, inp;\n"
         x += "    __m128 tgt, inp, one;\n"
+        x += "    int i;  float *a, *b;\n" if (len >= 256)
         x += "    one = _mm_set1_ps(1.0f);\n"
         
+        if (len >= 256)
+          loops = len / 128
+          x += "    a = in;  b = out;\n"
+          x += "    for (i=0; i<#{loops}; i++) {\n"
+          (0..31).each do |j|
+            x += "        inp = _mm_load_ps(a+#{j*4});\n"
+            x += "        tgt = _mm_load_ps(b+#{j*4});\n"
+            x += "        inp = _mm_mul_ps(inp, inp);\n"
+            x += "        inp = _mm_sub_ps(one, inp);\n"
+            x += "        tgt = _mm_mul_ps(inp, tgt);\n"
+            x += "        _mm_store_ps(b+#{j*4}, tgt);\n"
+          end
+          x += "        a += 128;  b += 128;\n"
+          x += "    }\n"
+          len -= loops * 128;
+          io += loops * 128;
+          oo += loops * 128;
+        end
+
         while (len >= 4)
           x += "    inp = _mm_load_ps(in+#{io});\n"
           x += "    tgt = _mm_load_ps(out+#{oo});\n"
@@ -607,8 +780,28 @@ def mul_logistic_prime(len)
       if len >= 4
         #x += "    __m128 tgt, inp;\n"
         x += "    __m128 tgt, inp, one;\n"
+        x += "    int i;  float *a, *b;\n" if (len >= 256)
         x += "    one = _mm_set1_ps(1.0f);\n"
         
+        if (len >= 256)
+          loops = len / 128
+          x += "    a = in;  b = out;\n"
+          x += "    for (i=0; i<#{loops}; i++) {\n"
+          (0..31).each do |j|
+            x += "        inp = _mm_load_ps(a+#{j*4});\n"
+            x += "        tgt = _mm_load_ps(b+#{j*4});\n"
+            x += "        tgt = _mm_mul_ps(inp, tgt);\n"
+            x += "        inp = _mm_sub_ps(one, inp);\n"
+            x += "        tgt = _mm_mul_ps(inp, tgt);\n"
+            x += "        _mm_store_ps(b+#{j*4}, tgt);\n"
+          end
+          x += "        a += 128;  b += 128;\n"
+          x += "    }\n"
+          len -= loops * 128;
+          io += loops * 128;
+          oo += loops * 128;
+        end
+
         while (len >= 4)
           x += "    inp = _mm_load_ps(in+#{io});\n"
           x += "    tgt = _mm_load_ps(out+#{oo});\n"
@@ -682,8 +875,28 @@ def mul_relu_hard_prime(len)
       if len >= 4
         #x += "    __m128 tgt, inp;\n"
         x += "    __m128 tgt, inp, one, zero;\n"
+        x += "    int i;  float *a, *b;\n" if (len >= 256)
         x += "    one = _mm_set1_ps(1.0f);\n"
         x += "    zero = _mm_setzero_ps();\n"
+
+        if (len >= 256)
+          loops = len / 128
+          x += "    a = in;  b = out;\n"
+          x += "    for (i=0; i<#{loops}; i++) {\n"
+          (0..31).each do |j|
+            x += "        inp = _mm_load_ps(a+#{j*4});\n"
+            x += "        tgt = _mm_load_ps(b+#{j*4});\n"
+            x += "        inp = _mm_cmpgt_ps(inp, zero);\n"
+            x += "        inp = _mm_and_ps(inp, one);\n"
+            x += "        tgt = _mm_mul_ps(inp, tgt);\n"
+            x += "        _mm_store_ps(b+#{j*4}, tgt);\n"
+          end
+          x += "        a += 128;  b += 128;\n"
+          x += "    }\n"
+          len -= loops * 128;
+          io += loops * 128;
+          oo += loops * 128;
+        end
         
         while (len >= 4)
           x += "    inp = _mm_load_ps(in+#{io});\n"
@@ -1209,6 +1422,9 @@ class LayerSpec
   end
 end
 
+def mem_offset(str)
+  str.split("+")[1].to_i
+end
 
 class Network
   # Data
@@ -1262,9 +1478,26 @@ class Network
       
     x += "__attribute__((noinline)) "
     x += "void randomize_#{@name}(#{$float} *mem) {\n"
+    first = nil
+    prev = nil
+    loopct = 0
+    stride = 0
     @layers.each_index do |ln|
       layer = @layers[ln];
       layer.weights.each do |w|
+      #   if (first)
+      #     if (w-prev == stride)
+      #       loopct += 1
+      #     else
+      #       if (loopct == 1)
+      #         x += "    randomize_#{layer.n_in}(#{w});\n"
+      #         prev = w
+      #         loopct = 1
+      #         stride = 0
+      #         first = nil
+      #
+      #   prev = w if !prev
+      #
         x += "    randomize_#{layer.n_in}(#{w});\n"
       end
     end
