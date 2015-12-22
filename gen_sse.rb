@@ -848,7 +848,7 @@ def mul_relu_hard_prime(len)
   end
   x += "static void mul_relu_hard_prime_#{len}(#{$float} *in, "
   x += "#{$float} *out) {\n"
-  x += "    #{$float} j;\n"
+  x += "    #{$float} i;\n"
     
   if $use_sse
     if $double
@@ -915,11 +915,11 @@ def mul_relu_hard_prime(len)
   end
     
   while len > 0
-    x += "    j = in[#{io}];\n"
+    x += "    i = in[#{io}];\n"
     if $double
-      x += "    out[#{oo}] *= (j>0.0) ? 1.0 : 0.0;\n"
+      x += "    out[#{oo}] *= (i>0.0) ? 1.0 : 0.0;\n"
     else
-      x += "    out[#{oo}] *= (j>0.0f) ? 1.0f 0.0f;\n"
+      x += "    out[#{oo}] *= (i>0.0f) ? 1.0f 0.0f;\n"
     end
     io += 1
     oo += 1
