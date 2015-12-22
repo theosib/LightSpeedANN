@@ -687,13 +687,13 @@ def mul_tanh_prime(len)
       if len >= 4
         #x += "    __m128 tgt, inp;\n"
         x += "    __m128 tgt, inp, one;\n"
-        x += "    int i;  float *a, *b;\n" if (len >= 256)
+        x += "    int j;  float *a, *b;\n" if (len >= 256)
         x += "    one = _mm_set1_ps(1.0f);\n"
         
         if (len >= 256)
           loops = len / 128
           x += "    a = in;  b = out;\n"
-          x += "    for (i=0; i<#{loops}; i++) {\n"
+          x += "    for (j=0; j<#{loops}; j++) {\n"
           (0..31).each do |j|
             x += "        inp = _mm_load_ps(a+#{j*4});\n"
             x += "        tgt = _mm_load_ps(b+#{j*4});\n"
@@ -780,13 +780,13 @@ def mul_logistic_prime(len)
       if len >= 4
         #x += "    __m128 tgt, inp;\n"
         x += "    __m128 tgt, inp, one;\n"
-        x += "    int i;  float *a, *b;\n" if (len >= 256)
+        x += "    int j;  float *a, *b;\n" if (len >= 256)
         x += "    one = _mm_set1_ps(1.0f);\n"
         
         if (len >= 256)
           loops = len / 128
           x += "    a = in;  b = out;\n"
-          x += "    for (i=0; i<#{loops}; i++) {\n"
+          x += "    for (j=0; j<#{loops}; j++) {\n"
           (0..31).each do |j|
             x += "        inp = _mm_load_ps(a+#{j*4});\n"
             x += "        tgt = _mm_load_ps(b+#{j*4});\n"
@@ -875,14 +875,14 @@ def mul_relu_hard_prime(len)
       if len >= 4
         #x += "    __m128 tgt, inp;\n"
         x += "    __m128 tgt, inp, one, zero;\n"
-        x += "    int i;  float *a, *b;\n" if (len >= 256)
+        x += "    int j;  float *a, *b;\n" if (len >= 256)
         x += "    one = _mm_set1_ps(1.0f);\n"
         x += "    zero = _mm_setzero_ps();\n"
 
         if (len >= 256)
           loops = len / 128
           x += "    a = in;  b = out;\n"
-          x += "    for (i=0; i<#{loops}; i++) {\n"
+          x += "    for (j=0; j<#{loops}; j++) {\n"
           (0..31).each do |j|
             x += "        inp = _mm_load_ps(a+#{j*4});\n"
             x += "        tgt = _mm_load_ps(b+#{j*4});\n"
