@@ -848,7 +848,7 @@ def mul_relu_hard_prime(len)
   end
   x += "static void mul_relu_hard_prime_#{len}(#{$float} *in, "
   x += "#{$float} *out) {\n"
-  x += "    #{$float} i;\n"
+  x += "    #{$float} j;\n"
     
   if $use_sse
     if $double
@@ -915,11 +915,11 @@ def mul_relu_hard_prime(len)
   end
     
   while len > 0
-    x += "    i = in[#{io}];\n"
+    x += "    j = in[#{io}];\n"
     if $double
-      x += "    out[#{oo}] *= (i>0.0) ? 1.0 : 0.0;\n"
+      x += "    out[#{oo}] *= (j>0.0) ? 1.0 : 0.0;\n"
     else
-      x += "    out[#{oo}] *= (i>0.0f) ? 1.0f 0.0f;\n"
+      x += "    out[#{oo}] *= (j>0.0f) ? 1.0f 0.0f;\n"
     end
     io += 1
     oo += 1
@@ -1426,6 +1426,96 @@ def mem_offset(str)
   str.split("+")[1].to_i
 end
 
+$reverse_address = {}
+
+class Group
+  attr_accessor :base, :count, :stride, :offsets
+end
+
+class Grouper
+  def initialize
+    @base = nil
+    @current = nil
+    @count = 0
+    @stride = 0
+    @list = nil
+    @old_list = []
+  end
+  
+  def <<(x)
+    #$stderr.puts "<< #{x}"
+    g = Group.new
+    g.base = x
+    y = []
+    x.each do |i|
+      p = $reverse_address[i]
+      y << (p ? p : i)
+    end
+    #$stderr.puts ">> #{y}"
+    g.offsets = y
+    g.count = 1
+    g.stride = 0
+    @old_list << g
+  end
+  
+  def list_dif(x, y)
+    #$stderr.puts "x:#{x}  y:#{y}"
+    d = []
+    x.each_index do |i|
+      d[i] = x[i] - y[i]
+    end
+    d
+  end
+  
+  def list_eq(x, y)
+    x.each_index do |i|
+      return false if x[i] != y[i]
+    end
+    true
+  end
+  
+  def count_conseq
+    if @old_list.size < 3
+      return @old_list.size, nil
+    end
+    stride = list_dif(@old_list[1].offsets, @old_list[0].offsets)
+    count = 2
+    while (count < @old_list.size)
+      stride2 = list_dif(@old_list[count].offsets, @old_list[count-1].offsets)
+      eq = list_eq(stride2, stride)
+      break if !eq
+      count += 1
+    end
+    [count,stride]
+  end
+  
+  def get_list
+    return @list if @list
+    
+    @list = []
+    while @old_list.size > 0
+      count,stride = count_conseq
+      if (count < 3)
+        #$stderr.puts "1"
+        @list << @old_list.shift
+      else
+        #$stderr.puts "#{count}"
+        h = @old_list[0]
+        @old_list.shift(count)
+        g = Group.new
+        g.base = h.base
+        g.stride = stride
+        g.offsets = h.offsets
+        g.count = count
+        @list << g
+      end
+    end
+    
+    @list
+  end
+end
+
+
 class Network
   # Data
   attr_accessor :layers, :name, :outsig, :in_tmp, :mem_size, :out_tmp
@@ -1478,28 +1568,33 @@ class Network
       
     x += "__attribute__((noinline)) "
     x += "void randomize_#{@name}(#{$float} *mem) {\n"
+    x += "    int i, j;\n"
     first = nil
     prev = nil
     loopct = 0
     stride = 0
     @layers.each_index do |ln|
-      layer = @layers[ln];
+      layer = @layers[ln]
+      g = Grouper.new
       layer.weights.each do |w|
-      #   if (first)
-      #     if (w-prev == stride)
-      #       loopct += 1
-      #     else
-      #       if (loopct == 1)
-      #         x += "    randomize_#{layer.n_in}(#{w});\n"
-      #         prev = w
-      #         loopct = 1
-      #         stride = 0
-      #         first = nil
-      #
-      #   prev = w if !prev
-      #
-        x += "    randomize_#{layer.n_in}(#{w});\n"
+        g << [w]
       end
+      g = g.get_list
+      g.each do |h|
+        if (h.count == 1)
+          x += "    randomize_#{layer.n_in}(#{h.base[0]});\n"
+        else
+          x += "    j = 0;\n"
+          x += "    for (i=0; i<#{h.count}; i++) {\n"
+          x += "        randomize_#{layer.n_in}(#{h.base[0]} + j);\n"
+          x += "        j += #{h.stride[0]};\n"
+          x += "    }\n"
+        end
+      end
+      
+      # layer.weights.each do |w|
+      #   x += "    randomize_#{layer.n_in}(#{w});\n"
+      # end
     end
     x += "}\n\n"
     x
@@ -1625,6 +1720,7 @@ class Network
     l = layer_list.clone
     prev_nnodes = l.shift.size
     @in_tmp = "(mem+#{allocate_block(prev_nnodes)})"
+    $reverse_address["IN_TMP"] = @in_tmp
     x = "#define IN_TMP #{@in_tmp}\n"
     @in_tmp = "IN_TMP"
     prev_val = "IN_TMP"
@@ -1642,6 +1738,7 @@ class Network
 
       # Unquantized values
       values = allocate_block(nnodes)
+      $reverse_address["L#{ln}_VAL"] = values
       val_ptr = "(mem+#{values})"
       x += "#define L#{ln}_VAL #{val_ptr}\n"
       val_ptr = "L#{ln}_VAL"
@@ -1649,6 +1746,7 @@ class Network
       # Signal values
       if keep_signal
         signal = allocate_block(nnodes)
+        $reverse_address["L#{ln}_SIGNAL"] = signal
         signal_ptr = "(mem+#{signal})"
         x += "#define L#{ln}_SIGNAL #{signal_ptr}\n"
         signal_ptr = "L#{ln}_SIGNAL"
@@ -1660,6 +1758,7 @@ class Network
       if (layerspec.quantize)
         # Quantized values
         qval = allocate_block(nnodes);
+        $reverse_address["L#{ln}_QVAL"] = qval
         qval_ptr = "(mem+#{qval})"
         x += "#define L#{ln}_QVAL #{qval_ptr}\n"
         qval_ptr = "L#{ln}_QVAL"
@@ -1669,6 +1768,7 @@ class Network
       end
             
       deltas = allocate_block(nnodes)
+      $reverse_address["L#{ln}_DEL"] = deltas
       del_ptr = "(mem+#{deltas})"
       x += "#define L#{ln}_DEL #{del_ptr}\n"
       del_ptr = "L#{ln}_DEL"
@@ -1694,6 +1794,7 @@ class Network
             
       for i in 0...nnodes do
         weights = allocate_block(prev_nnodes + 1)
+        $reverse_address["L#{ln}_N#{i}_WEIGHTS"] = weights
         n = "(mem+#{weights})"
         x += "#define L#{ln}_N#{i}_WEIGHTS #{n}\n"
         layer.weights << "L#{ln}_N#{i}_WEIGHTS"
@@ -1741,6 +1842,7 @@ class Network
     @layers.each do |layer|
       x += "__attribute__((noinline)) "
       x += "#{$float} *forward_L#{layer.mynum}_#{@name}(#{$float} *mem) {\n"
+      x += "    int i, j, k;\n"
 
       nnodes = layer.n_out
       prev_nnodes = layer.n_in
@@ -1751,13 +1853,40 @@ class Network
       dprod_ptr = keep_signal ? signal : ptr
             
       @need_dotprod << prev_nnodes
-            
+      
+      g = Grouper.new
       for i in 0...nnodes do
         weights = layer.weights[i]
-        x += "    *(#{dprod_ptr}+#{i}) = "
-        x += "dotprod_#{prev_nnodes}(#{weights}, #{layer.in_qval}) "
-        x += "+ *(#{weights}+#{layer.n_in});\n";
+        l = [i, weights]
+        g << l
       end
+      g = g.get_list
+      g.each do |h|
+        if h.count == 1
+          i = h.base[0]
+          weights = h.base[1]
+          x += "    *(#{dprod_ptr}+#{i}) = "
+          x += "dotprod_#{prev_nnodes}(#{weights}, #{layer.in_qval}) "
+          x += "+ *(#{weights}+#{layer.n_in});\n";
+        else
+          i = h.base[0]
+          weights = h.base[1]
+          x += "    j = 0;  k = 0;\n"
+          x += "    for (i=0; i<#{h.count}; i++) {\n"
+          x += "        *(#{dprod_ptr}+#{i}+j) = "
+          x += "dotprod_#{prev_nnodes}(#{weights} + k, #{layer.in_qval}) "
+          x += "+ *(#{weights}+k+#{layer.n_in});\n";
+          x += "        j += #{h.stride[0]};  k += #{h.stride[1]};\n"
+          x += "    }\n"
+        end
+      end
+      
+      # for i in 0...nnodes do
+      #   weights = layer.weights[i]
+      #   x += "    *(#{dprod_ptr}+#{i}) = "
+      #   x += "dotprod_#{prev_nnodes}(#{weights}, #{layer.in_qval}) "
+      #   x += "+ *(#{weights}+#{layer.n_in});\n";
+      # end
             
       case layer.sig
       when :tanh
@@ -1809,6 +1938,7 @@ class Network
     x = "__attribute__((noinline)) "
     x += "void backward_#{@name}(#{$float} *desired, #{$float} *mem, #{$float} lr) {\n"
     x += "    #{$float} odel;\n"
+    x += "    int i, j;\n"
     @need_copy << @layers.last.n_out
     x += "    memory_copy_#{layers.last.n_out}(OUT_TMP, desired);\n\n"
         
@@ -1841,10 +1971,33 @@ class Network
       @need_clear << l.n_in
       #x += "    memset(#{l.in_del}, 0, sizeof(float) * #{l.n_in});\n"
       x += "    memory_clear_#{l.n_in}(#{l.in_del});\n"
+      
+      g = Grouper.new
       for i in 0...l.n_out
-        x += "    sum_scaled_#{l.n_in}(#{l.weights[i]}, #{l.in_del}, "
-        x += "*(#{l.out_del}+#{i}));\n"
+        m = [l.weights[i], i]
+        g << m
       end
+      g = g.get_list
+      g.each do |m|
+        i = m.base[1]
+        w = m.base[0]
+        if (m.count == 1)
+          x += "    sum_scaled_#{l.n_in}(#{w}, #{l.in_del}, "
+          x += "*(#{l.out_del}+#{i}));\n"
+        else
+          x += "    j = 0;\n"
+          x += "    for (i=0; i<#{m.count}; i++) {\n"
+          x += "        sum_scaled_#{l.n_in}(#{w} + j, #{l.in_del}, "
+          x += "*(#{l.out_del}+#{i}+i));\n"
+          x += "        j += #{m.stride[0]};\n"
+          x += "    }\n"
+        end
+      end
+      
+      # for i in 0...l.n_out
+      #   x += "    sum_scaled_#{l.n_in}(#{l.weights[i]}, #{l.in_del}, "
+      #   x += "*(#{l.out_del}+#{i}));\n"
+      # end
     
       case l.in_sig
       when :tanh
@@ -1868,16 +2021,39 @@ class Network
     ls.each do |l|
       x += "\n    /* Adjust weights */\n"
       @need_sum_scaled << l.n_in
+      
+      g = Grouper.new
       for i in 0...l.n_out
-        x += "    odel = *(#{l.out_del}+#{i}) * lr;"
-        #x += "if (odel > 1) printf(\"odel #{i} L#{l.mynum} = %f\\n\", odel);";
-        # if (i == 1 && l.mynum == 0)
-        #   x += "printf(\"%f\\n\", odel);\n"
-        # end
-        x += "    *(#{l.weights[i]}+#{l.n_in}) += odel;"
-        x += "    sum_scaled_#{l.n_in}(#{inputs}, "
-        x += "#{l.weights[i]}, odel);\n"
+        m = [l.weights[i], i]
+        g << m
       end
+      g = g.get_list
+      g.each do |m|
+        w = m.base[0]
+        i = m.base[1]
+        if (m.count == 1)
+          x += "    odel = *(#{l.out_del}+#{i}) * lr;"
+          x += "    *(#{w}+#{l.n_in}) += odel;"
+          x += "    sum_scaled_#{l.n_in}(#{inputs}, "
+          x += "#{w}, odel);\n"
+        else          
+          x += "    j = 0;\n"
+          x += "    for (i=0; i<#{m.count}; i++) {\n"
+          x += "        odel = *(#{l.out_del}+#{i}+i) * lr;"
+          x += "    *(#{w}+j+#{l.n_in}) += odel;"
+          x += "    sum_scaled_#{l.n_in}(#{inputs}, "
+          x += "#{w}+j, odel);\n"
+          x += "        j += #{m.stride[1]};\n"
+          x += "    }\n"
+        end
+      end
+      
+      # for i in 0...l.n_out
+      #   x += "    odel = *(#{l.out_del}+#{i}) * lr;"
+      #   x += "    *(#{l.weights[i]}+#{l.n_in}) += odel;"
+      #   x += "    sum_scaled_#{l.n_in}(#{inputs}, "
+      #   x += "#{l.weights[i]}, odel);\n"
+      # end
       inputs = l.out_val
     end
         
