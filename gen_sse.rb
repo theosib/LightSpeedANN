@@ -2043,7 +2043,7 @@ class Network
           x += "    *(#{w}+j+#{l.n_in}) += odel;"
           x += "    sum_scaled_#{l.n_in}(#{inputs}, "
           x += "#{w}+j, odel);\n"
-          x += "        j += #{m.stride[1]};\n"
+          x += "        j += #{m.stride[0]};\n"
           x += "    }\n"
         end
       end
