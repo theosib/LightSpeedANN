@@ -6,6 +6,7 @@ $double = false
 #$use_ssex = false
 $float = $double ? "double" : "float"
 $wsize = $double ? 2 : 1
+$reroll = 256
 
 def quantize(len, ibits, fbits)
   x = ""
@@ -42,18 +43,20 @@ def memclr(len)
     x += "    __m128 zero;\n"
     x += "    zero = _mm_setzero_ps();\n"
     
-    if (len>=1024)
+    if (len>=$reroll/2)
       x += "    int i;  float *p;\n"
-      loops = len / 512
+      reroll = $reroll / 4
+      loops = len / reroll
       x += "    p = (float *)dst;\n"
       x += "    for (i=0; i<#{loops}; i++) {\n"
-      (0..127).each do |j|
+      t = reroll/4
+      (0...t).each do |j|
         x += "        _mm_store_ps(p + #{j*4}, zero);\n"
       end
-      x += "        p += 512;\n"
+      x += "        p += #{reroll};\n"
       x += "    }\n"
-      i += loops * 512
-      len -= loops * 512
+      i += loops * reroll
+      len -= loops * reroll
     end
     while (len >= 4)
       x += "    _mm_store_ps((float *)dst + #{i}, zero);\n"
@@ -97,18 +100,20 @@ def memcpy(len)
       x += "    int i; float *s, *d;\n" if len>=512
       x += "    if (((long)src) & 0xf) {\n"
       i = 0
-      if (len >= 512)
-        loops = len / 256
+      if (len >= $reroll/2)
+        reroll = $reroll / 4
+        loops = len / reroll
         x += "        s = (float *)src; d = (float *)dst;\n"
         x += "        for (i=0; i<#{loops}; i++) {\n"
-        (0..63).each do |j|
+        t = reroll / 4
+        (0...t).each do |j|
           x += "            tmp = _mm_loadu_ps(s + #{j*4});\n"
           x += "            _mm_store_ps(d + #{j*4}, tmp);\n"
         end
-        x += "            s += 256; d += 256;\n"
+        x += "            s += #{reroll}; d += #{reroll};\n"
         x += "        }\n"
-        len -= loops * 256
-        i += loops * 256
+        len -= loops * reroll
+        i += loops * reroll
       end          
       while (len >= 4)
         x += "        tmp = _mm_loadu_ps((float *)src + #{i});\n"
@@ -118,18 +123,20 @@ def memcpy(len)
       end
       x += "    } else {\n"
       i = 0
-      if (len2 >= 512)
-        loops = len2 / 256
+      if (len2 >= $reroll/2)
+        reroll = $reroll / 4
+        loops = len2 / reroll
         x += "        s = (float *)src; d = (float *)dst;\n"
         x += "        for (i=0; i<#{loops}; i++) {\n"
-        (0..63).each do |j|
+        t = reroll / 4
+        (0...t).each do |j|
           x += "            tmp = _mm_loadu_ps(s + #{j*4});\n"
           x += "            _mm_store_ps(d + #{j*4}, tmp);\n"
         end
-        x += "            s += 256; d += 256;\n"
+        x += "            s += #{reroll}; d += #{reroll};\n"
         x += "        }\n"
-        len2 -= loops * 256
-        i += loops * 256
+        len2 -= loops * reroll
+        i += loops * reroll
       end          
       while (len2 >= 4)
         x += "        tmp = _mm_load_ps((float *)src + #{i});\n"
@@ -192,21 +199,23 @@ def subtract(len)
     else
       if len >= 4
         x += "    __m128 ina, inb;\n"
-        if (len >= 256)
+        if (len >= $reroll / 2)
+          reroll = $reroll / 4
           x += "    int i; float *ai, *bi, *ci;\n"
-          loops = len / 128
+          loops = len / reroll
           x += "    ai = a; bi = b; ci = c;\n"
           x += "    for (i=0; i<#{loops}; i++) {\n"
-          (0..31).each do |j|
+          t = reroll / 4
+          (0...t).each do |j|
             x += "        ina = _mm_load_ps(ai + #{j*4});\n"
             x += "        inb = _mm_load_ps(ib + #{j*4});\n"
             x += "        ina = _mm_sub_ps(ina, inb);\n"
             x += "        _mm_store_ps(ci + #{j*4}, ina);\n"
           end
-          x += "        ai += 128; bi += 128; ci += 128;\n"
+          x += "        ai += #{reroll}; bi += #{reroll}; ci += #{reroll};\n"
           x += "    }"
-          i += loops * 128
-          len -= loops * 128
+          i += loops * reroll
+          len -= loops * reroll
         end
         while (len >= 4)
           x += "    ina = _mm_load_ps(a + #{i});\n"
@@ -264,11 +273,13 @@ def subtract_tanh_prime(len)
       end
     else
       x += "    ones = _mm_set1_ps(1.0f);\n"
-      if (len >= 128)
-        loops = len / 64
+      if (len >= $reroll / 4)
+        reroll = $reroll / 8
+        loops = len / reroll
         x += "    ai = a; bi = b; ci = c;\n"
         x += "    for (i=0; i<#{loops}; i++) {\n"
-        (0..15).each do |j|
+        t = reroll / 4
+        (0...t).each do |j|
           x += "        ina = _mm_load_ps(ai + #{j*4});\n"
           x += "        inb = _mm_load_ps(bi + #{j*4});\n"
           x += "        ina = _mm_sub_ps(ina, inb);\n"
@@ -277,10 +288,10 @@ def subtract_tanh_prime(len)
           x += "        ina = _mm_mul_ps(inb, ina);\n"
           x += "        _mm_store_ps(ci + #{j*4}, ina);\n"
         end
-        x += "        ai += 64; bi += 64; ci += 64;\n"
+        x += "        ai += #{reroll}; bi += #{reroll}; ci += #{reroll};\n"
         x += "    }\n"
-        i += 64 * loops
-        len -= 64 * loops
+        i += reroll * loops
+        len -= reroll * loops
       end
       while (len >= 4)
         x += "    ina = _mm_load_ps(a + #{i});\n"
@@ -342,11 +353,13 @@ def subtract_logistic_prime(len)
       end
     else
       x += "    ones = _mm_set1_ps(1.0f);\n"
-      if (len >= 128)
-        loops = len / 64
+      if (len >= $reroll / 4)
+        reroll = $reroll / 8
+        loops = len / reroll
         x += "    ai = a; bi = b; ci = c;\n"
         x += "    for (i=0; i<#{loops}; i++) {\n"
-        (0..15).each do |j|
+        t = reroll / 4
+        (0...t).each do |j|
           x += "        ina = _mm_load_ps(ai + #{j*4});\n"
           x += "        inb = _mm_load_ps(bi + #{j*4});\n"
           x += "        ina = _mm_sub_ps(ina, inb);\n"  # a := a-b
@@ -355,10 +368,10 @@ def subtract_logistic_prime(len)
           x += "        ina = _mm_mul_ps(ina, inb);\n"  # a := (a-b)*b*(1-b)
           x += "        _mm_store_ps(ci + #{j*4}, ina);\n"
         end
-        x += "        ai += 64; bi += 64; ci += 64;\n"
+        x += "        ai += #{reroll}; bi += #{reroll}; ci += #{reroll};\n"
         x += "    }\n"
-        i += 64 * loops
-        len -= 64 * loops
+        i += reroll * loops
+        len -= reroll * loops
       end
       while (len >= 4)
         x += "    ina = _mm_load_ps(a + #{i});\n"
@@ -470,22 +483,24 @@ def dotprod(len)
         wo += 4
       end
       
-      if (len >= 256)
-        loops = len/128
+      if (len >= $reroll/2)
+        reroll = $reroll / 4
+        loops = len/reroll
         x += "    v = values + #{io}; w = weights + #{wo};\n"
         x += "    for (i=0; i<#{loops}; i++) {\n"
-        (0..31).each do |j|
+        t = reroll / 4
+        (0...t).each do |j|
           y = 3&(j)
           x += "        inp   = _mm_load_ps(v+#{j*4});\n"
           x += "        wei   = _mm_load_ps(w+#{j*4});\n"
           x += "        prod  = _mm_mul_ps(inp, wei);\n"
           x += "        total#{y} = _mm_add_ps(prod, total#{y});\n"
         end
-        x += "        v += 128;  w += 128;\n"
+        x += "        v += #{reroll};  w += #{reroll};\n"
         x += "    }\n"
-        len -= loops * 128
-        io += loops * 128
-        wo += loops * 128
+        len -= loops * reroll
+        io += loops * reroll
+        wo += loops * reroll
       end
         
       while (len >= 4)
@@ -605,22 +620,24 @@ def sum_scaled(len)
         x += "    int i;  float *a, *b;\n" if (len >= 256)
         x += "    sca = _mm_set1_ps(scale);\n"
       
-        if (len >= 256)
-          loops = len / 128
+        if (len >= $reroll / 2)
+          reroll = $reroll / 4
+          loops = len / reroll
           x += "    a = in;  b = out;\n"
           x += "    for (i=0; i<#{loops}; i++) {\n"
-          (0..31).each do |j|
+          t = reroll / 4
+          (0...t).each do |j|
             x += "        inp = _mm_load_ps(a+#{j*4});\n"
             x += "        tgt = _mm_load_ps(b+#{j*4});\n"
             x += "        inp = _mm_mul_ps(sca, inp);\n"
             x += "        tgt = _mm_add_ps(inp, tgt);\n"
             x += "        _mm_store_ps(b+#{j*4}, tgt);\n"
           end
-          x += "        a += 128;  b += 128;\n"
+          x += "        a += #{reroll};  b += #{reroll};\n"
           x += "    }\n"
-          len -= loops * 128;
-          io += loops * 128;
-          oo += loops * 128;
+          len -= loops * reroll;
+          io += loops * reroll;
+          oo += loops * reroll;
         end
       
         while (len >= 4)
@@ -690,11 +707,13 @@ def mul_tanh_prime(len)
         x += "    int j;  float *a, *b;\n" if (len >= 256)
         x += "    one = _mm_set1_ps(1.0f);\n"
         
-        if (len >= 256)
-          loops = len / 128
+        if (len >= $reroll / 2)
+          reroll = $reroll / 4
+          loops = len / reroll
           x += "    a = in;  b = out;\n"
           x += "    for (j=0; j<#{loops}; j++) {\n"
-          (0..31).each do |j|
+          t = reroll / 4
+          (0...t).each do |j|
             x += "        inp = _mm_load_ps(a+#{j*4});\n"
             x += "        tgt = _mm_load_ps(b+#{j*4});\n"
             x += "        inp = _mm_mul_ps(inp, inp);\n"
@@ -702,11 +721,11 @@ def mul_tanh_prime(len)
             x += "        tgt = _mm_mul_ps(inp, tgt);\n"
             x += "        _mm_store_ps(b+#{j*4}, tgt);\n"
           end
-          x += "        a += 128;  b += 128;\n"
+          x += "        a += #{reroll};  b += #{reroll};\n"
           x += "    }\n"
-          len -= loops * 128;
-          io += loops * 128;
-          oo += loops * 128;
+          len -= loops * reroll;
+          io += loops * reroll;
+          oo += loops * reroll;
         end
 
         while (len >= 4)
@@ -783,11 +802,13 @@ def mul_logistic_prime(len)
         x += "    int j;  float *a, *b;\n" if (len >= 256)
         x += "    one = _mm_set1_ps(1.0f);\n"
         
-        if (len >= 256)
-          loops = len / 128
+        if (len >= $reroll / 2)
+          reroll = $reroll / 4
+          loops = len / reroll
           x += "    a = in;  b = out;\n"
           x += "    for (j=0; j<#{loops}; j++) {\n"
-          (0..31).each do |j|
+          t = reroll / 4
+          (0...t).each do |j|
             x += "        inp = _mm_load_ps(a+#{j*4});\n"
             x += "        tgt = _mm_load_ps(b+#{j*4});\n"
             x += "        tgt = _mm_mul_ps(inp, tgt);\n"
@@ -795,11 +816,11 @@ def mul_logistic_prime(len)
             x += "        tgt = _mm_mul_ps(inp, tgt);\n"
             x += "        _mm_store_ps(b+#{j*4}, tgt);\n"
           end
-          x += "        a += 128;  b += 128;\n"
+          x += "        a += #{reroll};  b += #{reroll};\n"
           x += "    }\n"
-          len -= loops * 128;
-          io += loops * 128;
-          oo += loops * 128;
+          len -= loops * reroll;
+          io += loops * reroll;
+          oo += loops * reroll;
         end
 
         while (len >= 4)
@@ -879,11 +900,13 @@ def mul_relu_hard_prime(len)
         x += "    one = _mm_set1_ps(1.0f);\n"
         x += "    zero = _mm_setzero_ps();\n"
 
-        if (len >= 256)
-          loops = len / 128
+        if (len >= $reroll/2)
+          reroll = $reroll / 4
+          loops = len / reroll
           x += "    a = in;  b = out;\n"
           x += "    for (j=0; j<#{loops}; j++) {\n"
-          (0..31).each do |j|
+          t = reroll / 4
+          (0...t).each do |j|
             x += "        inp = _mm_load_ps(a+#{j*4});\n"
             x += "        tgt = _mm_load_ps(b+#{j*4});\n"
             x += "        inp = _mm_cmpgt_ps(inp, zero);\n"
@@ -891,11 +914,11 @@ def mul_relu_hard_prime(len)
             x += "        tgt = _mm_mul_ps(inp, tgt);\n"
             x += "        _mm_store_ps(b+#{j*4}, tgt);\n"
           end
-          x += "        a += 128;  b += 128;\n"
+          x += "        a += #{reroll};  b += #{reroll};\n"
           x += "    }\n"
-          len -= loops * 128;
-          io += loops * 128;
-          oo += loops * 128;
+          len -= loops * reroll;
+          io += loops * reroll;
+          oo += loops * reroll;
         end
         
         while (len >= 4)
@@ -1842,7 +1865,7 @@ class Network
     @layers.each do |layer|
       x += "__attribute__((noinline)) "
       x += "#{$float} *forward_L#{layer.mynum}_#{@name}(#{$float} *mem) {\n"
-      x += "    int i, j, k;\n"
+      x += "    int i, k;\n"
 
       nnodes = layer.n_out
       prev_nnodes = layer.n_in
@@ -1871,12 +1894,12 @@ class Network
         else
           i = h.base[0]
           weights = h.base[1]
-          x += "    j = 0;  k = 0;\n"
+          x += "    k = 0;\n"
           x += "    for (i=0; i<#{h.count}; i++) {\n"
-          x += "        *(#{dprod_ptr}+#{i}+j) = "
+          x += "        *(#{dprod_ptr}+#{i}+i) = "
           x += "dotprod_#{prev_nnodes}(#{weights} + k, #{layer.in_qval}) "
           x += "+ *(#{weights}+k+#{layer.n_in});\n";
-          x += "        j += #{h.stride[0]};  k += #{h.stride[1]};\n"
+          x += "        k += #{h.stride[1]};\n"
           x += "    }\n"
         end
       end
