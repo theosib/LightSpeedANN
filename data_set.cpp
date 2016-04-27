@@ -177,10 +177,10 @@ void DataSet<T>::loadFile(const string& pattern, istream& is)
         //cout << str << endl;
         //t = atof(str.c_str());
 
-        while (isspace(*p) && p<q) p++;
+        while ((*p=='|' || *p==',' || isspace(*p)) && p<q) p++;
         str = "";
-        while (!isspace(*p) && p<q) str += *p++;
-        while (isspace(*p) && p<q) p++;
+        while (!isspace(*p) && *p!=',' && *p!='|' && p<q) str += *p++;
+        while ((*p=='|' || *p==',' || isspace(*p)) && p<q) p++;
         t = atof(str.c_str());
         
         switch (pattern[i]) {

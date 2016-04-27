@@ -1,5 +1,29 @@
 #ruby gen_sse.rb 2 32 32 32 5 > net_2_32_32_32_5_double.c
 #ruby gen_sse.rb 2 16 16 1 > net_2_16_16_1_double.c
-ruby gen_sse.rb 2 32 32 5 > net_2_32_32_5_double.c
-clang++ net_2_32_32_5_double.c data_set.cpp train.cpp  -std=c++11 -O3 -msse3 
+#ruby gen_sse.rb 2 32 32 5 > net_2_32_32_5_double.c
+#clang++ annt.c data_set.cpp train.cpp  -std=c++11 -O3 -msse3 -o annt
+#clang++ ann_3t.c data_set.cpp train_class.cpp  -std=c++11 -O3 -msse3 -o annt
+#clang++ ann_3t.c data_set.cpp train_class.cpp  -std=c++11 -O3 -msse3 -o annq
+#clang++ annt.c ann_3t.c data_set.cpp train_uncertainty.cpp  -std=c++11 -O3 -msse3 -o annq
+#clang++ ann7.c data_set.cpp train_ann7.cpp  -std=c++11 -O3 -msse3 -o ann7
+#clang++ ann_bat4.c data_set.cpp train_bat.cpp  -std=c++11 -O3 -msse3 -o ann_bat
+#clang++ ann_bat5.c data_set.cpp train_bat2.cpp  -std=c++11 -O3 -msse3 -o ann_bat2
+#clang++ ann_bat6.c data_set.cpp train_bat6.cpp  -std=c++11 -O3 -msse3 -o ann_bat6
+#clang++ ann_bat7.c data_set.cpp train_bat7.cpp  -std=c++11 -O3 -msse3 -o ann_bat7
+#clang++ ann_bat6.c data_set.cpp train_bat9.cpp  -std=c++11 -O3 -msse3 -o ann_bat9
+#clang++ ann_bat11.c data_set.cpp train_bat11.cpp  -std=c++11 -O3 -msse3 -o ann_bat11
+#clang++ ann_bat12.c data_set.cpp train_bat12.cpp  -std=c++11 -O3 -msse3 -o ann_bat12
+
+clang++ ann_112.c data_set.cpp train_ann112.cpp  -std=c++11 -O3 -msse3 -o ann112
+
+#
+#clang++ \
+#ann_g0.c \
+#ann_g1.c \
+#ann_g2.c \
+#ann_g3.c \
+#ann_g4.c \
+#ann_g5.c \
+#ann_g6.c \
+#data_set.cpp train_cnn.cpp  -std=c++11 -O3 -msse3 -o anng
 

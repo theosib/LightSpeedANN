@@ -617,7 +617,7 @@ def sum_scaled(len)
     else
       if (len >= 4)
         x += "    __m128 tgt, inp, sca;\n"
-        x += "    int i;  float *a, *b;\n" if (len >= 256)
+        x += "    int i;  float *a, *b;\n"
         x += "    sca = _mm_set1_ps(scale);\n"
       
         if (len >= $reroll / 2)
@@ -704,7 +704,7 @@ def mul_tanh_prime(len)
       if len >= 4
         #x += "    __m128 tgt, inp;\n"
         x += "    __m128 tgt, inp, one;\n"
-        x += "    int j;  float *a, *b;\n" if (len >= 256)
+        x += "    int j;  float *a, *b;\n"
         x += "    one = _mm_set1_ps(1.0f);\n"
         
         if (len >= $reroll / 2)
